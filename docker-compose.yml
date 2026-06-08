@@ -1,0 +1,135 @@
+# 全栈编排 —— 9 个服务：redis / postgres / api / worker / flower / prometheus /
+# grafana / nginx / streamlit。
+#
+# 关键修正（相对 project_planning.md 第 5 节的参考蓝图）：
+#   1) .env 里 REDIS_URL / DATABASE_URL 用的是 localhost（供宿主 make dev 直跑），
+#      容器内 localhost 指向容器自身，连不到 redis/postgres。故对容器化服务用
+#      environment: 覆盖为服务名 redis / postgres（environment 优先级高于 env_file）。
+#   2) streamlit 入口是仓库根的 app.py（蓝图写的 app/app.py 不存在）。
+#   3) api 与 worker 共享命名卷 prom_multiproc，并设同一 PROMETHEUS_MULTIPROC_DIR，
+#      api 的 /metrics 才能聚合 worker 进程里自增的业务指标（planning_duration /
+#      celery_active_tasks / cache_hits 等都在 worker 进程）。
+#   4) 删除已废弃的顶层 version: 字段（compose v2+ 会告警）。
+
+services:
+
+  redis:
+    image: redis:8-alpine
+    ports: ["6379:6379"]
+    volumes: ["redis_data:/data"]
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: travel_agent
+      POSTGRES_USER: travel
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes: ["pg_data:/var/lib/postgresql/data"]
+    # 宿主 5432 已被既有的独立容器 travel-pg 占用 → 改映射到 5433。
+    # 容器网络内仍是 postgres:5432，app/worker 用服务名连接，不受影响。
+    ports: ["5433:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U travel -d travel_agent"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: .
+    command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --workers 2
+    ports: ["8000:8000"]
+    env_file: .env
+    environment:
+      # 覆盖 .env 的 localhost → 容器网络服务名。
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql+asyncpg://travel:${POSTGRES_PASSWORD}@postgres/travel_agent
+      # 多进程指标聚合目录（与 worker 同卷同路径）。
+      PROMETHEUS_MULTIPROC_DIR: /prom_multiproc
+    volumes:
+      - ./:/app
+      - prom_multiproc:/prom_multiproc
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+
+  worker:
+    build: .
+    command: >
+      celery -A tasks.celery_app worker
+      -Q trip.planning,trip.weather,trip.poi
+      --concurrency=3
+      --loglevel=info
+      -E
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql+asyncpg://travel:${POSTGRES_PASSWORD}@postgres/travel_agent
+      PROMETHEUS_MULTIPROC_DIR: /prom_multiproc
+    volumes:
+      - prom_multiproc:/prom_multiproc
+    depends_on:
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+    deploy:
+      replicas: 2     # 扩到 2 个 worker 容器演示横向扩展（可调）
+
+  flower:
+    build: .
+    command: celery -A tasks.celery_app flower --port=5555
+    ports: ["5555:5555"]
+    env_file: .env
+    environment:
+      REDIS_URL: redis://redis:6379
+      # 允许免鉴权访问 Flower REST API（本地演示用；生产应改用 --basic-auth）。
+      FLOWER_UNAUTHENTICATED_API: "true"
+    depends_on: [redis]
+
+  streamlit:
+    build: .
+    command: streamlit run app.py --server.port=8501 --server.address=0.0.0.0
+    ports: ["8501:8501"]
+    env_file: .env
+    environment:
+      # Streamlit 在进程内跑 TripPlanner（LangGraph 检查点写 redis db0）。
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql+asyncpg://travel:${POSTGRES_PASSWORD}@postgres/travel_agent
+    volumes: ["./:/app"]
+    depends_on: [redis]
+
+  prometheus:
+    image: prom/prometheus:latest
+    # 宿主 9090 已被既有的独立容器 travel-prometheus 占用 → 改映射到 9091。
+    ports: ["9091:9090"]
+    volumes: ["./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    depends_on: [api]
+
+  grafana:
+    image: grafana/grafana:latest
+    ports: ["3000:3000"]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD}
+    volumes:
+      - grafana_data:/var/lib/grafana
+      # 仪表盘（含 provider dashboards.yml + travel_agent.json）
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      # 数据源（指向 prometheus），否则仪表盘面板取不到数据。
+      - ./monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on: [prometheus]
+
+  nginx:
+    image: nginx:alpine
+    ports: ["80:80"]
+    volumes: ["./nginx.conf:/etc/nginx/nginx.conf:ro"]
+    depends_on: [api, streamlit]
+
+volumes:
+  redis_data:
+  pg_data:
+  grafana_data:
+  prom_multiproc:

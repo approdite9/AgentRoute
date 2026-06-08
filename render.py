@@ -1,30 +1,56 @@
 """渲染工具 —— JSON 解析、CLI 格式化、Streamlit 组件。"""
-import json
 
 
-def parse_plan(text: str) -> dict | None:
-    """从混合文本中提取并解析旅行计划 JSON。"""
+def parse_plan(text: str | dict) -> dict | None:
+    """解析并用 Pydantic 校验旅行计划；已是 dict 则原样返回。"""
+    if isinstance(text, dict):
+        return text
     try:
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start == -1 or end == 0:
+        from schemas import TravelPlan
+        import json
+        import re
+
+        match = re.search(r"\{[\s\S]*\}", text)
+        if not match:
             return None
-        return json.loads(text[start:end])
-    except (json.JSONDecodeError, KeyError):
+        data = json.loads(match.group())
+        plan = TravelPlan.model_validate(data)
+        return plan.model_dump()
+    except Exception:
         return None
+
+
+# ==================== 共享小工具 ====================
+
+def hotel_price_label(hotel: dict) -> str:
+    """酒店价格展示：优先价格区间（price_range），无则退回单价 estimated_cost/晚。"""
+    price_range = hotel.get("price_range")
+    if price_range:
+        return f"{price_range}/晚"
+    return f"¥{hotel.get('estimated_cost', 0)}/晚"
 
 
 # ==================== CLI 格式化 ====================
 
 def _weather_icon(weather: str) -> str:
+    # 先匹配更具体的描述，再退到通用的「雷/雨/雪/雾」兜底，
+    # 这样「雷阵雨」「阵雨」「冻雨」等组合词也能拿到合理图标，而非落到默认温度计。
     mapping = {
+        "雷阵雨": "⛈️", "雷雨": "⛈️", "暴雨": "⛈️", "大雨": "⛈️",
+        "中雨": "🌧️", "小雨": "🌧️", "阵雨": "🌧️",
         "晴": "☀️", "多云": "⛅", "阴": "☁️",
-        "小雨": "🌧️", "中雨": "🌧️", "大雨": "⛈️", "暴雨": "⛈️",
         "雪": "❄️", "雾": "🌫️", "霾": "🌫️",
     }
     for key, icon in mapping.items():
         if key in weather:
             return icon
+    # 通用兜底：任何含「雷」「雨」「雪」的描述都给对应图标。
+    if "雷" in weather:
+        return "⛈️"
+    if "雨" in weather:
+        return "🌧️"
+    if "雪" in weather:
+        return "❄️"
     return "🌡️"
 
 
@@ -73,10 +99,13 @@ def format_plan_cli(json_text: str) -> str | None:
 
         hotel = day.get("hotel", {})
         if hotel.get("name"):
-            lines.append(
+            hotel_line = (
                 f"  🏨 {hotel['name']}  ★{hotel.get('rating', '')}  "
-                f"¥{hotel.get('estimated_cost', 0)}/晚  |  {hotel.get('address', '')}"
+                f"{hotel_price_label(hotel)}"
             )
+            if hotel.get("address"):
+                hotel_line += f"  |  {hotel['address']}"
+            lines.append(hotel_line)
         lines.append(f"  🚌 {day.get('transportation', '')}")
 
         attractions = day.get("attractions", [])
@@ -86,10 +115,16 @@ def format_plan_cli(json_text: str) -> str | None:
                 ticket = a.get("ticket_price", 0)
                 ts = "免费" if ticket == 0 else f"¥{ticket}"
                 lines.append(f"     · {a.get('name', '?')}")
-                lines.append(
-                    f"       {a.get('address', '')}  |  {a.get('category', '')}  |  "
-                    f"游玩约{a.get('visit_duration', 0)}分钟  |  {ts}"
-                )
+                # 只拼接有值的字段，避免地址/类别为空时出现悬空的「 | 」分隔符。
+                meta = [
+                    part for part in (
+                        a.get("address", ""),
+                        a.get("category", ""),
+                        f"游玩约{a.get('visit_duration', 0)}分钟",
+                        ts,
+                    ) if part
+                ]
+                lines.append("       " + "  |  ".join(meta))
 
         meals = day.get("meals", [])
         if meals:

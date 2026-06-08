@@ -1,0 +1,17 @@
+# 构建上下文裁剪：避免把 git 历史、字节码缓存、虚拟环境、覆盖率/测试缓存、
+# 示例图片等拷进镜像（COPY . . 时），加速构建并减小镜像层。
+.git
+.gitignore
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+.env
+.DS_Store
+*.png
+monitoring/prom_multiproc/
+*.md

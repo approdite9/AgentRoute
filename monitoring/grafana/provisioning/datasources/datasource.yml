@@ -1,0 +1,10 @@
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    uid: prometheus          # 仪表盘面板按此 uid 引用数据源
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true

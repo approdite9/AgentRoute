@@ -1,0 +1,15 @@
+apiVersion: 1
+
+# 仪表盘 provider：从本目录加载所有 *.json（即 travel_agent.json）。
+# 本目录被挂载到 /etc/grafana/provisioning/dashboards。
+providers:
+  - name: travel-agent
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    editable: true
+    updateIntervalSeconds: 10
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

@@ -1,12 +1,8 @@
 """
 配置中心 —— 统一管理环境变量、LLM 实例、MCP 连接参数。
 """
-import os
-from dataclasses import dataclass, field
-from dotenv import load_dotenv
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from langchain_community.chat_models.tongyi import ChatTongyi
-
-load_dotenv()
 
 # ========== 修复 langchain_community ChatTongyi 流式 tool_calls 的 KeyError ==========
 # 上游 bug: subtract_client_response 访问 prev_function["name"] / ["arguments"]
@@ -43,47 +39,57 @@ ChatTongyi.subtract_client_response = _patched_subtract
 # ========== 修复结束 ==========
 
 
-@dataclass
-class Config:
-    """全局配置，单例语义 —— 模块级 CONFIG 实例"""
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # API 密钥
-    api_key: str = field(
-        default_factory=lambda: os.getenv("DASHSCOPE_API_KEY", "")
-    )
-
-    # LLM
+    dashscope_api_key: str
     model_name: str = "qwen3-max"
     temperature: float = 0.7
-
-    # MCP 连接（阿里百炼高德地图）
-    mcp_transport: str = "http"
+    max_tokens: int = 8192
+    redis_url: str = "redis://localhost:6379"
+    database_url: str = ""
     mcp_url: str = "https://dashscope.aliyuncs.com/api/v1/mcps/amap-maps/mcp"
+    langchain_tracing_v2: bool = True
+    langchain_project: str = "travel-agent-v1"
+    langchain_api_key: str = ""
+    rate_limit_per_minute: int = 10
+    sentry_dsn: str = ""
 
-    # 工具领域映射
-    tool_domains: dict = field(default_factory=lambda: {
-        "poi":     ["maps_text_search", "maps_search_detail"],
+    # ===== MCP 连接 / 工具分发 =====
+    # langchain_mcp_adapters 传输方式；阿里百炼 amap-maps 走 HTTP 流式。
+    mcp_transport: str = "streamable_http"
+    # 按领域分发 MCP 工具子集（工具名见高德地图 MCP 暴露的真实名称）。
+    # 关键：各域只暴露「完成任务所必需的最小工具集」，从源头杜绝子 Agent 调用
+    # 详情/周边/地理编码等附加工具而打爆每日配额（USER_DAILY_QUERY_OVER_LIMIT）。
+    tool_domains: dict[str, list[str]] = {
+        # 景点：maps_text_search 单次即可返回名称/地址/坐标/类别，足够规划用
+        "poi": ["maps_text_search"],
+        # 酒店：同样只给一次文本搜索，杜绝逐家详情/地理编码的额外调用
+        "hotel": ["maps_text_search"],
         "weather": ["maps_weather"],
-        "route":   [
-            "maps_direction_walking_by_address",
-            "maps_direction_driving_by_address",
-            "maps_direction_transit_integrated_by_address",
+        "route": [
+            "maps_direction_walking",
+            "maps_direction_driving",
+            "maps_direction_transit_integrated",
+            "maps_direction_bicycling",
+            "maps_distance",
         ],
-    })
+    }
 
-    # 自动检查初始化
-    def __post_init__(self):
-        if not self.api_key:
-            raise ValueError("请配置 DASHSCOPE_API_KEY")
+    @property
+    def api_key(self) -> str:
+        """MCP 鉴权所用 API Key（与 DashScope 相同）。"""
+        return self.dashscope_api_key
 
-    # 创建模型实例对象
-    def create_llm(self) -> ChatTongyi:
+    def create_llm(self, *, streaming: bool = True) -> ChatTongyi:
+        # streaming=False 用于结构化输出（with_structured_output）：流式下
+        # ChatTongyi 的 tool_call args 会被拆散、组装不全，导致 Pydantic 校验缺字段。
         return ChatTongyi(
             model=self.model_name,
-            api_key=self.api_key,
+            api_key=self.dashscope_api_key,
             temperature=self.temperature,
-            streaming=True,          # ← 启用水龙头，流式输出最远走到这里
+            streaming=streaming,
         )
 
 
-CONFIG = Config()
+settings = Settings()

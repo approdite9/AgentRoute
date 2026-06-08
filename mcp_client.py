@@ -3,7 +3,7 @@ MCP 客户端管理器 —— 单例模式，全局共享高德地图 MCP 连接
 """
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_core.tools import BaseTool
-from config import CONFIG
+from config import settings as CONFIG
 
 
 class McpClientManager:

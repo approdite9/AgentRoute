@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: travel_api
+    static_configs:
+      # 全栈 docker compose 下：抓容器化的 api:8000。
+      # worker 进程无独立 HTTP 端点，其业务指标经多进程模式（共享 prom_multiproc 卷）
+      # 由 api 的 /metrics 一并聚合暴露。
+      #
+      # 若改用 make dev（api 跑在宿主、prometheus 跑在容器），把下面换成
+      # host.docker.internal:8000。
+      - targets: ['api:8000']
+    metrics_path: /metrics

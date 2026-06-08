@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.DS_Store
+.coverage
+.pytest_cache/
+# Prometheus 多进程模式的指标文件（每次重启前清空，勿入库）
+monitoring/prom_multiproc/

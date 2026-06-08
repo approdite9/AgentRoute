@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "travel-agent"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "streamlit",
+    "celery[redis]",
+    "redis[asyncio]",
+    "asyncpg",
+    "sqlalchemy[asyncio]",
+    "alembic",
+    "structlog",
+    "sentry-sdk[fastapi]",
+    "langgraph",
+    "langgraph-checkpoint-redis",
+    "langsmith",
+    "langchain",
+    "langchain-community",
+    "langchain-mcp-adapters",
+    "dashscope",
+    "prometheus-fastapi-instrumentator",
+    "flower",
+    "python-dotenv",
+    "pydantic>=2",
+    "pydantic-settings",
+    "tenacity",
+    "prometheus_client",
+    "httpx",
+    "nest_asyncio",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+    "anyio",
+]
+
+[tool.pytest.ini_options]
+# testpaths 让「无参数 pytest（如 --cov 不带路径）」也从 tests/ 开始收集，
+# 从而把 tests/conftest.py 当作初始 conftest —— 其中的 pytest_plugins=["anyio"] 才合法。
+testpaths = ["tests"]
+addopts = "-ra"

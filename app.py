@@ -1,8 +1,14 @@
 """智能旅行助手 — Streamlit Web 界面。"""
 import asyncio
+import uuid
+
+
+
 from datetime import date
 
 import streamlit as st
+
+import ui
 
 # ---- 页面配置 ----
 st.set_page_config(
@@ -45,10 +51,9 @@ st.markdown("""
 # ---- 初始化 ----
 @st.cache_resource
 def get_planner():
-    from config import CONFIG
+    # TripPlanner 现在是 LangGraph StateGraph 的薄封装，无需注入 LLM。
     from agents.planner import TripPlanner
-    llm = CONFIG.create_llm()
-    return TripPlanner(llm)
+    return TripPlanner()
 
 
 # ---- 辅助: 构建 prompt ----
@@ -112,7 +117,7 @@ with st.sidebar:
         end_date = st.date_input("📅 结束日期", value=date.today())
 
     if start_date and end_date and end_date >= start_date:
-        trip_days = (end_date - start_date).days
+        trip_days = (end_date - start_date).days + 1
         st.info(f"📌 共计 **{trip_days}** 天")
     elif end_date < start_date:
         st.error("结束日期不能早于开始日期")
@@ -161,9 +166,17 @@ if "plan_data" not in st.session_state:
     st.session_state.plan_data = None
 if "plan_raw" not in st.session_state:
     st.session_state.plan_raw = ""
+# 两阶段流程状态机：input（待输入）→ review（人审数据预览）→ done（已出稿）
+if "phase" not in st.session_state:
+    st.session_state.phase = "input"
+if "draft" not in st.session_state:
+    st.session_state.draft = None
+# 每次「开始规划」会新建一个 thread_id（见下方提交逻辑），用于 Redis 检查点隔离对话
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = str(uuid.uuid4())
 
 # 未开始时的引导页
-if not submit_btn and st.session_state.plan_data is None:
+if st.session_state.phase == "input" and not submit_btn:
     st.info("👈 在左侧填写旅行参数，然后点击 **开始规划** 按钮")
     col_a, col_b, col_c = st.columns(3)
     with col_a:
@@ -176,7 +189,7 @@ if not submit_btn and st.session_state.plan_data is None:
         st.markdown("##### 📊 预算自动汇总")
         st.caption("景点门票、餐饮、住宿、交通费用一目了然")
 
-# 点击按钮后执行
+# 点击按钮后执行（Phase 1：采集数据 → 停在人审断点）
 if submit_btn:
     if not city.strip():
         st.error("请输入目的地城市")
@@ -189,43 +202,97 @@ if submit_btn:
             transport_selected, hotel_type, pref_selected, extra_requirements,
         )
 
-        # 流式输出区域
-        with st.spinner("🤖 AI 正在为您规划旅行方案..."):
-            from render import parse_plan
+        # 每次「开始规划」都用全新 thread_id：避免复用上一次行程的检查点，
+        # 否则入口路由会因残留的 final_plan 把这次当成「修改」而跳过数据采集。
+        st.session_state.thread_id = str(uuid.uuid4())
+        st.session_state.plan_data = None
+        st.session_state.plan_raw = prompt
 
-            stream_placeholder = st.empty()
-            status_placeholder = st.empty()
+        with st.spinner("🤖 正在收集数据（天气 → 景点 → 酒店 → 路线）..."):
+            review = asyncio.run(
+                planner.start_review(prompt, thread_id=st.session_state.thread_id)
+            )
 
-            async def _collect():
-                results = []
-                async for token in planner.stream(prompt):
-                    results.append(token)
-                return results
+        if review.get("status") == "review":
+            # 命中人审断点：保存草稿，进入 review 阶段，等用户确认 / 给意见
+            st.session_state.draft = review["draft"]
+            st.session_state.draft_prompt = review.get("prompt", "")
+            st.session_state.phase = "review"
+            st.rerun()
+        else:
+            # 兜底：未触发断点（异常情况）直接拿到成稿
+            plan = review.get("plan") or None
+            if not plan:
+                st.error("😟 规划失败，请稍后重试或调整旅行参数。")
+            else:
+                st.session_state.plan_data = plan
+                st.session_state.phase = "done"
+                st.rerun()
 
-            tokens = asyncio.run(_collect())
 
-            # 分离状态行和内容
-            full_text = ""
-            status_lines = []
-            for token in tokens:
-                full_text += token
-                stripped = token.strip()
-                if any(stripped.startswith(emoji) for emoji in ["🌤️", "🏨", "🏛️", "🚶", "🚗", "🚌"]):
-                    status_lines.append(stripped)
+# ============ Phase 2: 人审阶段（数据预览 + 收集反馈 → 恢复生成）============
+if st.session_state.phase == "review" and st.session_state.draft:
+    planner = get_planner()
+    draft = st.session_state.draft
 
-            # 显示状态
-            if status_lines:
-                status_placeholder.markdown(
-                    "  \n".join(status_lines) + "  \n✅ 生成完成！"
+    st.markdown(
+        f'<div class="plan-title">📝 {draft.get("city", "")} 数据收集预览 ｜ '
+        f'{draft.get("start_date", "")} ~ {draft.get("end_date", "")}</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        st.session_state.get("draft_prompt")
+        or "以下数据已采集完成。确认无误可直接生成完整计划；也可填写修改意见后再生成。"
+    )
+
+    with st.expander("🔍 数据收集预览", expanded=True):
+        _draft_labels = {
+            "weather": "🌤️ 天气",
+            "poi": "🏛️ 景点",
+            "hotel": "🏨 酒店",
+            "route": "🚌 路线",
+        }
+        for _key, _label in _draft_labels.items():
+            info = draft.get(_key) or {}
+            if info.get("ready"):
+                st.markdown(f"**{_label}** ✅  &nbsp;_{info.get('chars', 0)} 字_", unsafe_allow_html=True)
+                if info.get("preview"):
+                    st.caption(info["preview"])
+            else:
+                st.markdown(f"**{_label}** ⚠️ 未获取到数据")
+
+    st.text_input(
+        "修改意见（留空则直接生成）",
+        key="review_feedback",
+        placeholder="例如：景点多安排些户外的；酒店换到市中心；行程节奏放慢些",
+    )
+    col_confirm, col_restart = st.columns([3, 1])
+    with col_confirm:
+        if st.button("✅ 确认生成", type="primary", use_container_width=True):
+            # 留空 → 默认哨兵「请继续生成完整计划」（与 nodes.DEFAULT_RESUME 一致），
+            # 表示无修改、直接整合。
+            feedback = (st.session_state.get("review_feedback") or "").strip() or "请继续生成完整计划"
+            with st.spinner("🧩 正在整合完整行程..."):
+                plan = asyncio.run(
+                    planner.resume(feedback, thread_id=st.session_state.thread_id)
                 )
-
-            # 解析并存储
-            plan = parse_plan(full_text)
-            st.session_state.plan_data = plan
-            st.session_state.plan_raw = full_text
-            st.session_state.status_lines = status_lines
-
-        st.rerun()
+            if not plan:
+                st.error("😟 生成失败，请重试或重新开始。")
+            else:
+                st.session_state.plan_data = plan
+                st.session_state.draft = None
+                st.session_state.phase = "done"
+                st.session_state.status_lines = [
+                    "🌤️ 天气查询", "🏛️ 景点搜索", "🏨 酒店搜索",
+                    "🚌 路线规划", "🧩 行程整合",
+                ]
+                st.rerun()
+    with col_restart:
+        if st.button("↩️ 重新开始", use_container_width=True):
+            st.session_state.phase = "input"
+            st.session_state.draft = None
+            st.session_state.plan_data = None
+            st.rerun()
 
 
 # ============ 结果展示 ============
@@ -236,177 +303,27 @@ if plan is not None:
         with st.expander("🔍 规划过程", expanded=False):
             st.markdown("\n".join(st.session_state.status_lines))
 
-    # ---- 标题 ----
-    city = plan.get("city", "")
-    sd = plan.get("start_date", "")
-    ed = plan.get("end_date", "")
-    st.markdown(
-        f'<div class="plan-title">🌴 {city}旅行计划 ｜ {sd} ~ {ed}</div>',
-        unsafe_allow_html=True,
+    # 标题 / 天气 / 每日行程 / 预算 / 建议 / 导出 —— 统一交给 ui.render_plan_result，
+    # 与 verify_ui 自检页共用同一套渲染（含天气卡换行、价格区间、预算自洽等修复）。
+    ui.render_plan_result(plan)
+
+    # ============ 多轮修改（复用同一 thread 的检查点，直接重整合）============
+    st.markdown("---")
+    st.markdown("### 🔄 修改计划")
+    st.caption("在已生成的计划基础上微调，无需重新采集数据。")
+    modification = st.text_input(
+        "输入修改要求",
+        key="modify_input",
+        placeholder="例如：把第二天改成去博物馆，减少购物",
     )
-
-    # ---- 天气卡片 ----
-    weather = plan.get("weather_info", [])
-    if weather:
-        st.markdown("##### 🌤️ 天气预报")
-        cols = st.columns(len(weather))
-        weather_icon_map = {
-            "晴": "☀️", "多云": "⛅", "阴": "☁️",
-            "小雨": "🌧️", "中雨": "🌧️", "大雨": "⛈️", "暴雨": "⛈️",
-        }
-
-        for i, w in enumerate(weather):
-            d = w.get("date", "")[-5:]
-            di = weather_icon_map.get(w.get("day_weather", ""), "🌡️")
-            with cols[i]:
-                st.markdown(
-                    f"""<div class="weather-card" style="text-align:center">
-                    <b>{d}</b><br>
-                    {di} {w.get('day_weather', '?')}<br>
-                    🌡️ {w.get('day_temp', '?')}°C / {w.get('night_temp', '?')}°C<br>
-                    💨 {w.get('wind_direction', '')}{w.get('wind_power', '')}
-                    </div>""",
-                    unsafe_allow_html=True,
-                )
-
-    # ---- 每日行程 ----
-    st.markdown("---")
-    st.markdown("##### 📅 每日行程")
-
-    days = plan.get("days", [])
-    if days:
-        tabs = st.tabs([f"Day {d.get('day_index', i) + 1}" for i, d in enumerate(days)])
-        for i, (tab, day) in enumerate(zip(tabs, days)):
-            with tab:
-                d = day.get("date", "")[-5:]
-                desc = day.get("description", "")
-
-                st.markdown(f'<div class="day-header">📅 {d}  {desc}</div>', unsafe_allow_html=True)
-
-                # 住宿
-                hotel = day.get("hotel", {})
-                if hotel.get("name"):
-                    st.markdown(
-                        f"🏨 **{hotel['name']}**  ★{hotel.get('rating', '-')}  "
-                        f"¥{hotel.get('estimated_cost', 0)}/晚  |  {hotel.get('address', '')}"
-                    )
-                st.caption(f"🚌 {day.get('transportation', '')}")
-
-                # 景点
-                attractions = day.get("attractions", [])
-                if attractions:
-                    st.markdown("**🏛️ 景点**")
-                    for a in attractions:
-                        ticket = a.get("ticket_price", 0)
-                        ts = "🆓 免费" if ticket == 0 else f"🎫 ¥{ticket}"
-                        with st.container(border=True):
-                            st.markdown(
-                                f"**{a.get('name', '?')}**  |  {a.get('category', '')}  |  "
-                                f"⏱️ {a.get('visit_duration', 0)}分钟  |  {ts}"
-                            )
-                            st.caption(a.get("address", ""))
-                            if a.get("description"):
-                                st.caption(a["description"])
-
-                # 餐饮
-                meals = day.get("meals", [])
-                if meals:
-                    st.markdown("**🍽️ 餐饮推荐**")
-                    mt = {"breakfast": "🌅 早餐", "lunch": "☀️ 午餐", "dinner": "🌙 晚餐"}
-                    meal_cols = st.columns(len(meals))
-                    for j, m in enumerate(meals):
-                        label = mt.get(m.get("type", ""), "餐")
-                        with meal_cols[j]:
-                            st.markdown(
-                                f"*{label}*\n\n**{m.get('name', '?')}**  \n"
-                                f"¥{m.get('estimated_cost', 0)}"
-                            )
-
-    # ---- 预算 ----
-    budget = plan.get("budget", {})
-    if budget:
-        st.markdown("---")
-        st.markdown("##### 💰 预算汇总")
-        bc1, bc2, bc3, bc4, bc5 = st.columns(5)
-        with bc1:
-            st.metric("景点门票", f"¥{budget.get('total_attractions', 0):,}")
-        with bc2:
-            st.metric("酒店住宿", f"¥{budget.get('total_hotels', 0):,}")
-        with bc3:
-            st.metric("餐饮美食", f"¥{budget.get('total_meals', 0):,}")
-        with bc4:
-            st.metric("交通出行", f"¥{budget.get('total_transportation', 0):,}")
-        with bc5:
-            st.metric("📊 总计", f"¥{budget.get('total', 0):,}",
-                      delta=None, delta_color="off")
-
-    # ---- 建议 ----
-    suggestions = plan.get("overall_suggestions", "")
-    if suggestions:
-        st.markdown("---")
-        st.markdown("##### 💡 旅行建议")
-        for tip in suggestions.replace("；", ";").split(";"):
-            tip = tip.strip()
-            if tip:
-                st.markdown(f"- {tip}")
-
-    # ============ 导出 ============
-    st.markdown("---")
-    st.markdown("##### 📥 导出计划")
-
-    def _build_markdown(p):
-        md = f"# 🌴 {p.get('city', '')}旅行计划\n\n"
-        md += f"**日期:** {p.get('start_date', '')} ~ {p.get('end_date', '')}\n\n"
-
-        md += "## 🌤️ 天气预报\n\n"
-        for w in p.get("weather_info", []):
-            md += (
-                f"- {w.get('date', '')[-5:]}: "
-                f"{w.get('day_weather', '')}/{w.get('night_weather', '')}  "
-                f"{w.get('day_temp', '')}°C~{w.get('night_temp', '')}°C  "
-                f"{w.get('wind_direction', '')}{w.get('wind_power', '')}\n"
+    if st.button("应用修改", use_container_width=True) and modification.strip():
+        planner = get_planner()
+        with st.spinner("🧩 正在按你的要求调整行程..."):
+            new_plan = asyncio.run(
+                planner.modify(modification.strip(), thread_id=st.session_state.thread_id)
             )
-
-        md += "\n## 📅 每日行程\n\n"
-        for day in p.get("days", []):
-            idx = day.get("day_index", 0) + 1
-            md += f"### Day {idx} — {day.get('date', '')[-5:]}  {day.get('description', '')}\n\n"
-            h = day.get("hotel", {})
-            if h.get("name"):
-                md += f"- **住宿:** {h['name']}  ★{h.get('rating', '')}  ¥{h.get('estimated_cost', 0)}/晚  |  {h.get('address', '')}\n"
-            md += f"- **交通:** {day.get('transportation', '')}\n"
-            for a in day.get("attractions", []):
-                t = "免费" if a.get("ticket_price", 0) == 0 else f"¥{a.get('ticket_price', 0)}"
-                md += f"  - **{a.get('name', '')}** ({a.get('category', '')})  ⏱️{a.get('visit_duration', 0)}分钟  {t}  |  {a.get('address', '')}\n"
-            for m in day.get("meals", []):
-                mt = {"breakfast": "早餐", "lunch": "午餐", "dinner": "晚餐"}
-                md += f"  - {mt.get(m.get('type', ''), '餐')}: {m.get('name', '')}  ¥{m.get('estimated_cost', 0)}\n"
-            md += "\n"
-
-        b = p.get("budget", {})
-        if b:
-            md += "## 💰 预算汇总\n\n"
-            md += f"| 项目 | 金额 |\n|------|------|\n"
-            md += f"| 景点门票 | ¥{b.get('total_attractions', 0):,} |\n"
-            md += f"| 酒店住宿 | ¥{b.get('total_hotels', 0):,} |\n"
-            md += f"| 餐饮美食 | ¥{b.get('total_meals', 0):,} |\n"
-            md += f"| 交通出行 | ¥{b.get('total_transportation', 0):,} |\n"
-            md += f"| **总计** | **¥{b.get('total', 0):,}** |\n"
-
-        sug = p.get("overall_suggestions", "")
-        if sug:
-            md += "\n## 💡 旅行建议\n\n"
-            for tip in sug.replace("；", ";").split(";"):
-                tip = tip.strip()
-                if tip:
-                    md += f"- {tip}\n"
-        return md
-
-    md_content = _build_markdown(plan)
-    st.download_button(
-        label="📄 下载 Markdown",
-        data=md_content,
-        file_name=f"{plan.get('city', '旅行')}_旅行计划.md",
-        mime="text/markdown",
-        use_container_width=True,
-    )
+        if new_plan:
+            st.session_state.plan_data = new_plan
+            st.rerun()
+        else:
+            st.error("😟 修改失败，请重试。")
