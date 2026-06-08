@@ -7,7 +7,7 @@ import pytest
 from pydantic import ValidationError
 
 from schemas import WeatherInfo, Budget, DayPlan, Meal, Hotel, TravelPlan
-from render import parse_plan
+from render import parse_plan, extract_lnglat, gcj02_to_wgs84
 
 
 def _weather(**over):
@@ -124,3 +124,25 @@ def test_parse_plan_passthrough_dict():
 def test_parse_plan_no_json_returns_none():
     """文本中没有 JSON 对象 → 返回 None。"""
     assert parse_plan("纯文本，没有任何花括号内容") is None
+
+
+# ==================== 地图坐标工具 ====================
+
+def test_extract_lnglat_shapes():
+    """extract_lnglat 兼容 dict（两种键名）与 'lng,lat' 字符串，拒绝脏数据。"""
+    assert extract_lnglat({"longitude": 112.93, "latitude": 28.23}) == (112.93, 28.23)
+    assert extract_lnglat({"lng": 116.4, "lat": 39.9}) == (116.4, 39.9)
+    assert extract_lnglat("116.4,39.9") == (116.4, 39.9)
+    assert extract_lnglat({}) is None
+    assert extract_lnglat(None) is None
+    assert extract_lnglat("0,0") is None  # 排除 0,0 脏点
+
+
+def test_gcj02_to_wgs84_shifts_in_china_not_abroad():
+    """GCJ-02→WGS-84：中国境内有数百米级偏移修正；境外原样返回。"""
+    wlng, wlat = gcj02_to_wgs84(116.397428, 39.90923)  # 北京天安门
+    # 修正幅度应在数百米量级（经度方向尤为明显）。
+    assert 0.001 < abs(116.397428 - wlng) < 0.02
+    assert abs(39.90923 - wlat) < 0.02
+    # 境外坐标不动（巴黎）。
+    assert gcj02_to_wgs84(2.3522, 48.8566) == (2.3522, 48.8566)

@@ -204,21 +204,33 @@ def build_sample_plan(inputs: dict) -> dict:
     for i in range(n_days):
         d = (base + timedelta(days=i)).isoformat()
         # 每个偏好造一个对应类别的景点，确保 preference_match 命中。
+        # 附带三亚附近的 GCJ-02 坐标（按天/序号轻微散开），方便离线演示地图打点。
         attractions = [
             {
                 "name": f"{p}景点{i + 1}",
                 "category": p,
                 "ticket_price": 50.0,
                 "visit_duration": 120,
+                "location": {
+                    "longitude": round(109.51 + i * 0.012 + j * 0.006, 6),
+                    "latitude": round(18.25 + i * 0.009 + j * 0.004, 6),
+                },
             }
-            for p in prefs
+            for j, p in enumerate(prefs)
         ]
         meals = [
             {"type": "breakfast", "name": "早餐", "estimated_cost": 30.0},
             {"type": "lunch", "name": "午餐", "estimated_cost": 60.0},
             {"type": "dinner", "name": "晚餐", "estimated_cost": 80.0},
         ]
-        hotel = {"name": f"{inputs.get('city', '')}酒店", "estimated_cost": 400.0}
+        hotel = {
+            "name": f"{inputs.get('city', '')}酒店",
+            "estimated_cost": 400.0,
+            "location": {
+                "longitude": round(109.50 + i * 0.012, 6),
+                "latitude": round(18.24 + i * 0.009, 6),
+            },
+        }
         days.append(
             {
                 "date": d,

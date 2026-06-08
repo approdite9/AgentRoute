@@ -30,6 +30,67 @@ def hotel_price_label(hotel: dict) -> str:
     return f"¥{hotel.get('estimated_cost', 0)}/晚"
 
 
+# ---- 坐标工具：高德返回 GCJ-02，Mapbox/deck.gl 底图是 WGS-84，直接打点会偏移约 500m ----
+
+def extract_lnglat(location) -> tuple[float, float] | None:
+    """从 schema 的 location 字段抽出 (经度, 纬度)。
+
+    兼容三种形态：dict{longitude,latitude} / dict{lng,lat} / 字符串 "经度,纬度"。
+    缺失或非法时返回 None（调用方据此跳过该点）。
+    """
+    lng = lat = None
+    if isinstance(location, dict):
+        lng = location.get("longitude", location.get("lng"))
+        lat = location.get("latitude", location.get("lat"))
+    elif isinstance(location, str) and "," in location:
+        parts = location.split(",")
+        if len(parts) == 2:
+            lng, lat = parts[0], parts[1]
+    try:
+        lng, lat = float(lng), float(lat)
+    except (TypeError, ValueError):
+        return None
+    # 经纬度合法性粗校验（排除 0,0 之类的脏数据）。
+    if not (-180 <= lng <= 180 and -90 <= lat <= 90) or (lng == 0 and lat == 0):
+        return None
+    return lng, lat
+
+
+def gcj02_to_wgs84(lng: float, lat: float) -> tuple[float, float]:
+    """高德 GCJ-02 坐标 → WGS-84（近似逆变换，误差约 1-2m，绘图足够）。
+
+    中国境外坐标不做偏移（GCJ-02 仅在中国大陆有意义）。
+    """
+    import math
+
+    if not (73.66 < lng < 135.05 and 3.86 < lat < 53.55):  # 境外
+        return lng, lat
+    a = 6378245.0
+    ee = 0.00669342162296594323
+    x, y = lng - 105.0, lat - 35.0
+    d_lat = (
+        -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y
+        + 0.2 * math.sqrt(abs(x))
+        + (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+        + (20.0 * math.sin(y * math.pi) + 40.0 * math.sin(y / 3.0 * math.pi)) * 2.0 / 3.0
+        + (160.0 * math.sin(y / 12.0 * math.pi) + 320 * math.sin(y * math.pi / 30.0)) * 2.0 / 3.0
+    )
+    d_lng = (
+        300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y
+        + 0.1 * math.sqrt(abs(x))
+        + (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
+        + (20.0 * math.sin(x * math.pi) + 40.0 * math.sin(x / 3.0 * math.pi)) * 2.0 / 3.0
+        + (150.0 * math.sin(x / 12.0 * math.pi) + 300.0 * math.sin(x / 30.0 * math.pi)) * 2.0 / 3.0
+    )
+    rad_lat = lat / 180.0 * math.pi
+    magic = math.sin(rad_lat)
+    magic = 1 - ee * magic * magic
+    sqrt_magic = math.sqrt(magic)
+    d_lat = (d_lat * 180.0) / ((a * (1 - ee)) / (magic * sqrt_magic) * math.pi)
+    d_lng = (d_lng * 180.0) / (a / sqrt_magic * math.cos(rad_lat) * math.pi)
+    return lng - d_lng, lat - d_lat
+
+
 # ==================== CLI 格式化 ====================
 
 def _weather_icon(weather: str) -> str:

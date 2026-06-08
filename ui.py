@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from render import _weather_icon, hotel_price_label
+from render import _weather_icon, hotel_price_label, extract_lnglat, gcj02_to_wgs84
 
 
 # 一行最多并排几张天气卡：再多就换行，避免长行程（如 7 天）把卡片挤成窄条、
@@ -21,13 +21,86 @@ _WEATHER_PER_ROW = 4
 
 
 def render_plan_result(plan: dict) -> None:
-    """把一份完整行程 dict 渲染为 Streamlit 页面（标题 / 天气 / 每日 / 预算 / 建议 / 导出）。"""
+    """把一份完整行程 dict 渲染为 Streamlit 页面（标题 / 天气 / 地图 / 每日 / 预算 / 建议 / 导出）。"""
     _render_title(plan)
     _render_weather(plan.get("weather_info", []))
+    _render_map(plan)
     _render_days(plan.get("days", []))
     _render_budget(plan.get("budget", {}))
     _render_suggestions(plan.get("overall_suggestions", ""))
     _render_export(plan)
+
+
+# ==================== 地图 ====================
+
+# 按天给点位上色（RGB），循环使用；酒店统一用醒目的金色以便区分。
+_DAY_COLORS = [
+    [33, 150, 243], [76, 175, 80], [244, 67, 54], [156, 39, 176],
+    [255, 152, 0], [0, 188, 212], [121, 85, 72],
+]
+_HOTEL_COLOR = [255, 193, 7]
+
+
+def _collect_map_points(plan: dict) -> list[dict]:
+    """收集所有带坐标的景点 + 酒店，做 GCJ-02→WGS-84 转换，供 deck.gl 打点。"""
+    points: list[dict] = []
+    for i, day in enumerate(plan.get("days", [])):
+        day_no = day.get("day_index", i) + 1
+        color = _DAY_COLORS[(day_no - 1) % len(_DAY_COLORS)]
+        for a in day.get("attractions", []):
+            ll = extract_lnglat(a.get("location"))
+            if not ll:
+                continue
+            lng, lat = gcj02_to_wgs84(*ll)
+            points.append({
+                "lng": lng, "lat": lat, "name": a.get("name", "景点"),
+                "kind": f"Day{day_no} 景点", "color": color,
+            })
+        hotel = day.get("hotel", {})
+        ll = extract_lnglat(hotel.get("location"))
+        if hotel.get("name") and ll:
+            lng, lat = gcj02_to_wgs84(*ll)
+            points.append({
+                "lng": lng, "lat": lat, "name": hotel["name"],
+                "kind": f"Day{day_no} 酒店", "color": _HOTEL_COLOR,
+            })
+    return points
+
+
+def _render_map(plan: dict) -> None:
+    """行程地图：把景点/酒店坐标在地图上打点（带名称悬浮提示）。"""
+    points = _collect_map_points(plan)
+    if not points:
+        return  # 无坐标则跳过，不显示空地图
+    st.markdown("---")
+    st.markdown("##### 🗺️ 行程地图")
+    try:
+        import pydeck as pdk
+    except ImportError:
+        # pydeck 随 streamlit 分发；万一缺失则退回 st.map（仅打点、无悬浮名称）。
+        st.map([{"lat": p["lat"], "lon": p["lng"]} for p in points])
+        return
+
+    lat0 = sum(p["lat"] for p in points) / len(points)
+    lng0 = sum(p["lng"] for p in points) / len(points)
+    layer = pdk.Layer(
+        "ScatterplotLayer",
+        data=points,
+        get_position="[lng, lat]",
+        get_fill_color="color",
+        get_radius=120,
+        radius_min_pixels=6,
+        radius_max_pixels=24,
+        pickable=True,
+    )
+    deck = pdk.Deck(
+        layers=[layer],
+        initial_view_state=pdk.ViewState(latitude=lat0, longitude=lng0, zoom=11, pitch=0),
+        tooltip={"text": "{kind}\n{name}"},
+        map_style=None,  # 用 deck.gl 自带 Carto 底图，无需 Mapbox token
+    )
+    st.pydeck_chart(deck, use_container_width=True)
+    st.caption("🔵 景点（按天着色） · 🟡 酒店 ｜ 坐标已由高德 GCJ-02 校正到 WGS-84")
 
 
 # ==================== 标题 ====================

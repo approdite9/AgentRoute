@@ -96,11 +96,11 @@ services:
     ports: ["8501:8501"]
     env_file: .env
     environment:
-      # Streamlit 在进程内跑 TripPlanner（LangGraph 检查点写 redis db0）。
-      REDIS_URL: redis://redis:6379
-      DATABASE_URL: postgresql+asyncpg://travel:${POSTGRES_PASSWORD}@postgres/travel_agent
+      # Streamlit 是 FastAPI 的瘦客户端：提交规划 → SSE 流式 → 渲染，
+      # 与 API 共用同一条 Celery→Postgres→Flower 链路（不再在进程内跑图）。
+      API_BASE_URL: http://api:8000
     volumes: ["./:/app"]
-    depends_on: [redis]
+    depends_on: [api]
 
   prometheus:
     image: prom/prometheus:latest

@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 10
     sentry_dsn: str = ""
 
+    # Streamlit UI 通过该地址访问 FastAPI（提交规划 → SSE 流式 → 渲染）。
+    # 本机开发用 localhost；docker-compose 里覆盖为 http://api:8000（见 environment）。
+    api_base_url: str = "http://localhost:8000"
+
     # LangGraph Redis 检查点的存活时间（分钟）。HITL / 多轮会话的检查点写在 db0
     # （checkpoint:* / checkpoint_write:*），若不过期会随会话数无限增长。设默认 TTL
     # 后用完即自动回收；配合 refresh_on_read，活跃会话每次读取都会续期，不会被中途清掉。

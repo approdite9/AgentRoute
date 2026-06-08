@@ -1,14 +1,24 @@
-"""智能旅行助手 — Streamlit Web 界面。"""
-import asyncio
-import uuid
+"""智能旅行助手 — Streamlit Web 界面（FastAPI 后端的瘦客户端）。
 
+不再在进程内直接跑 LangGraph：提交参数后 POST 给 FastAPI（/api/v1/trips），
+再订阅 SSE（/api/v1/trips/{task_id}/stream）实时展示规划进度，最终用
+ui.render_plan_result 渲染。这样「UI 提交」与「API 提交」共用同一条
+Celery → Postgres → Flower 链路——每次提交都会落库、可在历史/监控里看到。
 
-
+后端地址由环境变量 API_BASE_URL 指定（本机默认 http://localhost:8000；
+docker-compose 里覆盖为 http://api:8000）。
+"""
+import json
+import os
 from datetime import date
 
+import httpx
 import streamlit as st
 
 import ui
+
+API_BASE = os.environ.get("API_BASE_URL", "http://localhost:8000").rstrip("/")
+USER_ID = "streamlit"  # 标记 UI 提交，便于在 /trips/history 里按用户过滤
 
 # ---- 页面配置 ----
 st.set_page_config(
@@ -37,9 +47,7 @@ st.markdown("""
         background: #E3F2FD; border-radius: 10px; padding: 1rem; margin: 0.5rem 0;
         color: #1a1a1a;
     }
-    .weather-card b {
-        color: #1565C0;
-    }
+    .weather-card b { color: #1565C0; }
     .budget-card {
         background: #FFF8E1; border-radius: 10px; padding: 1rem; margin: 0.5rem 0;
         color: #1a1a1a;
@@ -48,16 +56,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ---- 初始化 ----
-@st.cache_resource
-def get_planner():
-    # TripPlanner 现在是 LangGraph StateGraph 的薄封装，无需注入 LLM。
-    from agents.planner import TripPlanner
-    return TripPlanner()
+# MCP 工具名 → 进度条上的友好标签（SSE 的 tool_start 事件里带的是高德工具名）。
+_TOOL_LABELS = {
+    "maps_weather": "🌤️ 查询天气",
+    "maps_text_search": "🔍 搜索景点 / 酒店",
+    "maps_direction_walking": "🚶 规划步行路线",
+    "maps_direction_driving": "🚗 规划驾车路线",
+    "maps_direction_transit_integrated": "🚌 规划公交路线",
+    "maps_direction_bicycling": "🚴 规划骑行路线",
+    "maps_distance": "📏 计算距离",
+}
 
 
-# ---- 辅助: 构建 prompt ----
-def build_prompt(
+def build_request(
     city: str,
     start_date: date,
     end_date: date,
@@ -65,41 +76,100 @@ def build_prompt(
     hotel_type: str,
     preferences: list[str],
     extra: str,
-) -> str:
-    days = (end_date - start_date).days
-    parts = [
-        f"{city}{days}日游",
-        f"{start_date.strftime('%Y年%m月%d日')}-{end_date.strftime('%Y年%m月%d日')}",
-    ]
-    if preferences:
-        parts.append(f"喜欢{'、'.join(preferences)}")
-    if hotel_type:
-        parts.append(f"住宿偏好{hotel_type}")
-    if transport:
-        parts.append(f"交通方式偏好{'、'.join(transport)}")
-    if extra.strip():
-        parts.append(f"额外要求: {extra.strip()}")
-    parts.append("中等预算")
-    return "，".join(parts)
+) -> dict:
+    """把表单参数转成 POST /api/v1/trips 的请求体（字段与 api.TripRequest 对齐）。"""
+    return {
+        "city": city.strip(),
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "preferences": preferences,
+        "hotel_type": hotel_type,
+        "transport": transport,
+        "extra": extra.strip(),
+        "user_id": USER_ID,
+    }
 
 
-# ---- 辅助: 转换流式事件 ----
-_SILENCE_NAMES = {"maps_weather", "maps_text_search", "maps_search_detail",
-                   "maps_direction_walking", "maps_direction_driving",
-                   "maps_direction_transit_integrated", "maps_direction_bicycling",
-                   "maps_distance", "maps_geo", "maps_regeocode",
-                   "maps_ip_location", "maps_around_search",
-                   "maps_schema_personal_map", "maps_schema_navi",
-                   "maps_schema_take_taxi"}
+def plan_via_api(req: dict, status) -> tuple[dict | None, str | None]:
+    """POST 提交规划 → 订阅 SSE 实时进度 → 返回 (plan, error)。
 
-_STREAM_LABELS = {
-    "query_weather":     "🌤️ 查询天气中...",
-    "search_hotel":      "🏨 搜索酒店中...",
-    "search_attraction": "🏛️ 搜索景点中...",
-    "maps_direction_walking_by_address":             "🚶 规划步行路线...",
-    "maps_direction_driving_by_address":             "🚗 规划驾车路线...",
-    "maps_direction_transit_integrated_by_address":  "🚌 规划公交路线...",
-}
+    status: st.status 容器，用于把工具进度逐条写出来。
+    """
+    try:
+        # read 超时给足：规划可能 60-90s；SSE 每秒有 keepalive 注释帧，不会空闲超时。
+        with httpx.Client(timeout=httpx.Timeout(15.0, read=180.0)) as client:
+            resp = client.post(f"{API_BASE}/api/v1/trips", json=req)
+            if resp.status_code == 429:
+                return None, "请求过于频繁（已触发限流），请稍后再试。"
+            resp.raise_for_status()
+            task_id = resp.json()["task_id"]
+            status.write(f"已提交，任务号 `{task_id}`，开始规划…")
+
+            plan: dict | None = None
+            error: str | None = None
+            with client.stream("GET", f"{API_BASE}/api/v1/trips/{task_id}/stream") as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    # SSE：数据帧形如 "data: {json}"；": keepalive" 等注释帧忽略。
+                    if not line or not line.startswith("data:"):
+                        continue
+                    try:
+                        evt = json.loads(line[5:].strip())
+                    except json.JSONDecodeError:
+                        continue
+                    etype = evt.get("type")
+                    if etype == "tool_start":
+                        name = evt.get("name") or ""
+                        status.write(_TOOL_LABELS.get(name, f"🔧 {name}") + " …")
+                    elif etype == "done":
+                        plan = evt.get("plan")
+                        break
+                    elif etype == "error":
+                        error = evt.get("message") or "规划失败"
+                        break
+            return plan, error
+    except httpx.ConnectError:
+        return None, (
+            f"无法连接后端 API（{API_BASE}）。请确认 FastAPI 与 Celery worker 已启动"
+            "（make dev / docker compose up）。"
+        )
+    except httpx.HTTPStatusError as exc:
+        return None, f"API 返回错误：HTTP {exc.response.status_code}"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"规划出错：{exc}"
+
+
+def run_and_store(req: dict, label: str) -> None:
+    """跑一次规划，成功则写入 session 并 rerun 渲染；失败则就地报错。"""
+    st.session_state.last_request = req
+    with st.status(label, expanded=True) as status:
+        plan, error = plan_via_api(req, status)
+        status.update(
+            label="✅ 规划完成" if plan else "⚠️ 规划未完成",
+            state="complete" if plan else "error",
+        )
+    if error:
+        st.error(f"😟 {error}")
+    elif not plan:
+        st.error("😟 未获取到行程，请稍后重试或调整参数。")
+    else:
+        st.session_state.plan_data = plan
+        st.rerun()
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def fetch_history(user_id: str) -> list[dict] | None:
+    """拉取最近规划历史（缓存 15s，避免每次 rerun 都打 API 触发限流）。"""
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(
+                f"{API_BASE}/api/v1/trips/history", params={"user_id": user_id}
+            )
+            resp.raise_for_status()
+            return resp.json()
+    except Exception:  # noqa: BLE001 —— 后端未起时静默降级
+        return None
+
 
 # ---- 主 UI ----
 st.markdown('<div class="main-header">🧳 智能旅行助手</div>', unsafe_allow_html=True)
@@ -125,10 +195,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🚗 交通方式")
     transport_options = ["公共交通", "自驾", "打车/网约车", "骑行", "步行"]
-    transport_selected = []
-    for opt in transport_options:
-        if st.checkbox(opt, key=f"trans_{opt}"):
-            transport_selected.append(opt)
+    transport_selected = [opt for opt in transport_options if st.checkbox(opt, key=f"trans_{opt}")]
 
     st.markdown("---")
     st.markdown("### 🏨 住宿偏好")
@@ -144,10 +211,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🎯 旅行偏好")
     pref_options = ["自然风光", "历史文化", "美食探店", "休闲度假", "艺术展览", "购物逛街", "亲子乐园"]
-    pref_selected = []
-    for opt in pref_options:
-        if st.checkbox(opt, key=f"pref_{opt}"):
-            pref_selected.append(opt)
+    pref_selected = [opt for opt in pref_options if st.checkbox(opt, key=f"pref_{opt}")]
 
     st.markdown("---")
     st.markdown("### 💬 额外要求")
@@ -160,23 +224,28 @@ with st.sidebar:
     st.markdown("---")
     submit_btn = st.button("🚀 开始规划", type="primary", use_container_width=True)
 
+    # 历史记录（读自 Postgres，经 API；证明 UI 提交确实落库）。
+    st.markdown("---")
+    with st.expander("🕘 历史记录", expanded=False):
+        history = fetch_history(USER_ID)
+        if history is None:
+            st.caption("（无法连接后端 API）")
+        elif not history:
+            st.caption("暂无记录")
+        else:
+            for r in history[:10]:
+                icon = {"done": "✅", "error": "❌", "planning": "⏳", "pending": "⏳"}.get(r.get("status"), "•")
+                st.caption(f"{icon} {r.get('city', '')} · {r.get('start_date', '')}~{r.get('end_date', '')}")
 
-# ============ 主区域: 结果展示 ============
+
+# ============ 会话状态 ============
 if "plan_data" not in st.session_state:
     st.session_state.plan_data = None
-if "plan_raw" not in st.session_state:
-    st.session_state.plan_raw = ""
-# 两阶段流程状态机：input（待输入）→ review（人审数据预览）→ done（已出稿）
-if "phase" not in st.session_state:
-    st.session_state.phase = "input"
-if "draft" not in st.session_state:
-    st.session_state.draft = None
-# 每次「开始规划」会新建一个 thread_id（见下方提交逻辑），用于 Redis 检查点隔离对话
-if "thread_id" not in st.session_state:
-    st.session_state.thread_id = str(uuid.uuid4())
+if "last_request" not in st.session_state:
+    st.session_state.last_request = None
 
-# 未开始时的引导页
-if st.session_state.phase == "input" and not submit_btn:
+# 引导页（尚无结果且未提交时）
+if st.session_state.plan_data is None and not submit_btn:
     st.info("👈 在左侧填写旅行参数，然后点击 **开始规划** 按钮")
     col_a, col_b, col_c = st.columns(3)
     with col_a:
@@ -184,146 +253,44 @@ if st.session_state.phase == "input" and not submit_btn:
         st.caption("接入高德地图 MCP，获取目的地准确天气预报")
     with col_b:
         st.markdown("##### 🏛️ 智能景点推荐")
-        st.caption("根据你的偏好，AI 精准匹配最适合的景点和路线")
+        st.caption("根据你的偏好，AI 精准匹配景点、酒店与路线")
     with col_c:
-        st.markdown("##### 📊 预算自动汇总")
-        st.caption("景点门票、餐饮、住宿、交通费用一目了然")
+        st.markdown("##### 🗺️ 地图 + 预算")
+        st.caption("行程地图可视化，门票/餐饮/住宿/交通费用一目了然")
 
-# 点击按钮后执行（Phase 1：采集数据 → 停在人审断点）
+# ============ 提交 → 调 API ============
 if submit_btn:
     if not city.strip():
         st.error("请输入目的地城市")
     elif end_date < start_date:
         st.error("结束日期不能早于开始日期")
     else:
-        planner = get_planner()
-        prompt = build_prompt(
+        req = build_request(
             city, start_date, end_date,
             transport_selected, hotel_type, pref_selected, extra_requirements,
         )
-
-        # 每次「开始规划」都用全新 thread_id：避免复用上一次行程的检查点，
-        # 否则入口路由会因残留的 final_plan 把这次当成「修改」而跳过数据采集。
-        st.session_state.thread_id = str(uuid.uuid4())
-        st.session_state.plan_data = None
-        st.session_state.plan_raw = prompt
-
-        with st.spinner("🤖 正在收集数据（天气 → 景点 → 酒店 → 路线）..."):
-            review = asyncio.run(
-                planner.start_review(prompt, thread_id=st.session_state.thread_id)
-            )
-
-        if review.get("status") == "review":
-            # 命中人审断点：保存草稿，进入 review 阶段，等用户确认 / 给意见
-            st.session_state.draft = review["draft"]
-            st.session_state.draft_prompt = review.get("prompt", "")
-            st.session_state.phase = "review"
-            st.rerun()
-        else:
-            # 兜底：未触发断点（异常情况）直接拿到成稿
-            plan = review.get("plan") or None
-            if not plan:
-                st.error("😟 规划失败，请稍后重试或调整旅行参数。")
-            else:
-                st.session_state.plan_data = plan
-                st.session_state.phase = "done"
-                st.rerun()
-
-
-# ============ Phase 2: 人审阶段（数据预览 + 收集反馈 → 恢复生成）============
-if st.session_state.phase == "review" and st.session_state.draft:
-    planner = get_planner()
-    draft = st.session_state.draft
-
-    st.markdown(
-        f'<div class="plan-title">📝 {draft.get("city", "")} 数据收集预览 ｜ '
-        f'{draft.get("start_date", "")} ~ {draft.get("end_date", "")}</div>',
-        unsafe_allow_html=True,
-    )
-    st.caption(
-        st.session_state.get("draft_prompt")
-        or "以下数据已采集完成。确认无误可直接生成完整计划；也可填写修改意见后再生成。"
-    )
-
-    with st.expander("🔍 数据收集预览", expanded=True):
-        _draft_labels = {
-            "weather": "🌤️ 天气",
-            "poi": "🏛️ 景点",
-            "hotel": "🏨 酒店",
-            "route": "🚌 路线",
-        }
-        for _key, _label in _draft_labels.items():
-            info = draft.get(_key) or {}
-            if info.get("ready"):
-                st.markdown(f"**{_label}** ✅  &nbsp;_{info.get('chars', 0)} 字_", unsafe_allow_html=True)
-                if info.get("preview"):
-                    st.caption(info["preview"])
-            else:
-                st.markdown(f"**{_label}** ⚠️ 未获取到数据")
-
-    st.text_input(
-        "修改意见（留空则直接生成）",
-        key="review_feedback",
-        placeholder="例如：景点多安排些户外的；酒店换到市中心；行程节奏放慢些",
-    )
-    col_confirm, col_restart = st.columns([3, 1])
-    with col_confirm:
-        if st.button("✅ 确认生成", type="primary", use_container_width=True):
-            # 留空 → 默认哨兵「请继续生成完整计划」（与 nodes.DEFAULT_RESUME 一致），
-            # 表示无修改、直接整合。
-            feedback = (st.session_state.get("review_feedback") or "").strip() or "请继续生成完整计划"
-            with st.spinner("🧩 正在整合完整行程..."):
-                plan = asyncio.run(
-                    planner.resume(feedback, thread_id=st.session_state.thread_id)
-                )
-            if not plan:
-                st.error("😟 生成失败，请重试或重新开始。")
-            else:
-                st.session_state.plan_data = plan
-                st.session_state.draft = None
-                st.session_state.phase = "done"
-                st.session_state.status_lines = [
-                    "🌤️ 天气查询", "🏛️ 景点搜索", "🏨 酒店搜索",
-                    "🚌 路线规划", "🧩 行程整合",
-                ]
-                st.rerun()
-    with col_restart:
-        if st.button("↩️ 重新开始", use_container_width=True):
-            st.session_state.phase = "input"
-            st.session_state.draft = None
-            st.session_state.plan_data = None
-            st.rerun()
+        run_and_store(req, "🤖 正在规划（天气 → 景点 → 酒店 → 路线 → 整合）...")
 
 
 # ============ 结果展示 ============
 plan = st.session_state.plan_data
 if plan is not None:
-    # 显示状态
-    if "status_lines" in st.session_state and st.session_state.status_lines:
-        with st.expander("🔍 规划过程", expanded=False):
-            st.markdown("\n".join(st.session_state.status_lines))
-
-    # 标题 / 天气 / 每日行程 / 预算 / 建议 / 导出 —— 统一交给 ui.render_plan_result，
-    # 与 verify_ui 自检页共用同一套渲染（含天气卡换行、价格区间、预算自洽等修复）。
     ui.render_plan_result(plan)
 
-    # ============ 多轮修改（复用同一 thread 的检查点，直接重整合）============
+    # ---- 调整并重新规划（瘦客户端：带上修改意见重新发起一次完整规划）----
     st.markdown("---")
-    st.markdown("### 🔄 修改计划")
-    st.caption("在已生成的计划基础上微调，无需重新采集数据。")
+    st.markdown("### 🔄 调整并重新规划")
+    st.caption("带上你的修改意见重新发起一次规划（会生成一条新的行程记录）。")
     modification = st.text_input(
-        "输入修改要求",
+        "修改要求",
         key="modify_input",
-        placeholder="例如：把第二天改成去博物馆，减少购物",
+        placeholder="例如：多安排户外景点、酒店换到市中心、行程节奏放慢些",
     )
-    if st.button("应用修改", use_container_width=True) and modification.strip():
-        planner = get_planner()
-        with st.spinner("🧩 正在按你的要求调整行程..."):
-            new_plan = asyncio.run(
-                planner.modify(modification.strip(), thread_id=st.session_state.thread_id)
-            )
-        if new_plan:
-            st.session_state.plan_data = new_plan
-            st.rerun()
+    if st.button("应用修改并重规划", use_container_width=True) and modification.strip():
+        base = st.session_state.last_request
+        if not base:
+            st.error("没有可复用的上次请求，请直接在左侧重新规划。")
         else:
-            st.error("😟 修改失败，请重试。")
+            new_req = dict(base)
+            new_req["extra"] = f"{base.get('extra', '')} {modification.strip()}".strip()
+            run_and_store(new_req, "🧩 正在按你的要求重新规划...")
