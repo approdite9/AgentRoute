@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     rate_limit_per_minute: int = 10
     sentry_dsn: str = ""
 
+    # LangGraph Redis 检查点的存活时间（分钟）。HITL / 多轮会话的检查点写在 db0
+    # （checkpoint:* / checkpoint_write:*），若不过期会随会话数无限增长。设默认 TTL
+    # 后用完即自动回收；配合 refresh_on_read，活跃会话每次读取都会续期，不会被中途清掉。
+    checkpoint_ttl_minutes: int = 24 * 60  # 24 小时
+
     # ===== MCP 连接 / 工具分发 =====
     # langchain_mcp_adapters 传输方式；阿里百炼 amap-maps 走 HTTP 流式。
     mcp_transport: str = "streamable_http"

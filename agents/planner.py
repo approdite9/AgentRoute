@@ -165,12 +165,21 @@ class TripPlanner:
 
         检查点写入 redis db0，键前缀 checkpoint: / checkpoint_write:
         （可用 `redis-cli -n 0 keys 'checkpoint:*'` 观察）。
+
+        带 TTL：检查点按 settings.checkpoint_ttl_minutes 过期，避免会话检查点无限堆积；
+        refresh_on_read=True 让活跃会话（多轮修改）每次读取自动续期，不会被中途清掉。
         """
         from langgraph.checkpoint.redis.aio import AsyncRedisSaver
         from agents.graph import build_graph
         from config import settings
 
-        async with AsyncRedisSaver.from_conn_string(settings.redis_url) as saver:
+        ttl_config = {
+            "default_ttl": settings.checkpoint_ttl_minutes,  # 单位：分钟
+            "refresh_on_read": True,
+        }
+        async with AsyncRedisSaver.from_conn_string(
+            settings.redis_url, ttl=ttl_config
+        ) as saver:
             await saver.asetup()  # 幂等：首次创建 RediSearch 索引，之后是 no-op
             yield build_graph(saver)
 
