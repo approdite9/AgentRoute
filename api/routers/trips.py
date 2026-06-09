@@ -101,6 +101,23 @@ async def create_trip(req: TripRequest, db: AsyncSession = Depends(get_db)) -> d
     return {"task_id": async_result.id, "trip_id": str(trip_id), "status": "pending"}
 
 
+@router.post("/trips/clarify")
+async def clarify_trip(req: TripRequest) -> dict:
+    """规划前主动追问：据初步需求返回 3-4 个澄清问题（单次 LLM 调用，无 MCP）。
+
+    失败（LLM 异常/超时）时降级为空列表，前端据此直接进入规划，不阻塞主流程。
+    方法为 POST 且路径固定，与 GET /trips/{task_id} 不冲突，无需考虑路由顺序。
+    """
+    from agents.clarify import generate_questions
+
+    try:
+        questions = await generate_questions(req.model_dump())
+    except Exception as exc:  # noqa: BLE001 —— 追问是增强项，失败不应中断规划
+        logger.warning("clarify_failed", error=str(exc), city=req.city)
+        questions = []
+    return {"questions": questions}
+
+
 @router.get("/trips/history")
 async def trip_history(
     user_id: str | None = None,

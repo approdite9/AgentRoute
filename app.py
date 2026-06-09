@@ -154,7 +154,36 @@ def run_and_store(req: dict, label: str) -> None:
         st.error("😟 未获取到行程，请稍后重试或调整参数。")
     else:
         st.session_state.plan_data = plan
+        st.session_state.phase = "input"  # 退出追问阶段，回到展示
         st.rerun()
+
+
+def fetch_clarify(req: dict) -> list[dict]:
+    """向 /trips/clarify 拉取澄清问题；失败/超时则返回空（直接进入规划）。"""
+    try:
+        with httpx.Client(timeout=httpx.Timeout(10.0, read=40.0)) as client:
+            resp = client.post(f"{API_BASE}/api/v1/trips/clarify", json=req)
+            resp.raise_for_status()
+            return resp.json().get("questions") or []
+    except Exception:  # noqa: BLE001 —— 追问失败不阻塞主流程
+        return []
+
+
+def fold_answers_into_request(base: dict, questions: list[dict]) -> dict:
+    """把澄清问答拼进 extra，作为额外约束并入规划请求。"""
+    parts: list[str] = []
+    for q in questions:
+        val = st.session_state.get(f"clarify_{q['id']}")
+        if not val:
+            continue
+        answer = "、".join(val) if isinstance(val, list) else str(val).strip()
+        if answer:
+            parts.append(f"{q['question']} {answer}")
+    new_req = dict(base)
+    if parts:
+        addition = "；".join(parts)
+        new_req["extra"] = f"{base.get('extra', '')} 补充偏好：{addition}".strip()
+    return new_req
 
 
 @st.cache_data(ttl=15, show_spinner=False)
@@ -222,6 +251,11 @@ with st.sidebar:
     )
 
     st.markdown("---")
+    clarify_on = st.checkbox(
+        "🤔 规划前智能追问",
+        value=True,
+        help="规划前先问你 3-4 个问题，把需求问清楚再定制行程。",
+    )
     submit_btn = st.button("🚀 开始规划", type="primary", use_container_width=True)
 
     # 历史记录（读自 Postgres，经 API；证明 UI 提交确实落库）。
@@ -243,14 +277,24 @@ if "plan_data" not in st.session_state:
     st.session_state.plan_data = None
 if "last_request" not in st.session_state:
     st.session_state.last_request = None
+if "phase" not in st.session_state:                 # input → clarify（→ 展示）
+    st.session_state.phase = "input"
+if "clarify_questions" not in st.session_state:
+    st.session_state.clarify_questions = []
+if "base_request" not in st.session_state:
+    st.session_state.base_request = None
 
-# 引导页（尚无结果且未提交时）
-if st.session_state.plan_data is None and not submit_btn:
+# 引导页（尚无结果、未提交、且不在追问阶段时）
+if (
+    st.session_state.plan_data is None
+    and st.session_state.phase == "input"
+    and not submit_btn
+):
     st.info("👈 在左侧填写旅行参数，然后点击 **开始规划** 按钮")
     col_a, col_b, col_c = st.columns(3)
     with col_a:
-        st.markdown("##### 🌤️ 实时天气查询")
-        st.caption("接入高德地图 MCP，获取目的地准确天气预报")
+        st.markdown("##### 🤔 规划前智能追问")
+        st.caption("先问清你的同伴、节奏、口味，再据此定制行程")
     with col_b:
         st.markdown("##### 🏛️ 智能景点推荐")
         st.caption("根据你的偏好，AI 精准匹配景点、酒店与路线")
@@ -258,7 +302,7 @@ if st.session_state.plan_data is None and not submit_btn:
         st.markdown("##### 🗺️ 地图 + 预算")
         st.caption("行程地图可视化，门票/餐饮/住宿/交通费用一目了然")
 
-# ============ 提交 → 调 API ============
+# ============ 提交 → （可选追问）→ 调 API ============
 if submit_btn:
     if not city.strip():
         st.error("请输入目的地城市")
@@ -269,7 +313,50 @@ if submit_btn:
             city, start_date, end_date,
             transport_selected, hotel_type, pref_selected, extra_requirements,
         )
-        run_and_store(req, "🤖 正在规划（天气 → 景点 → 酒店 → 路线 → 整合）...")
+        if clarify_on:
+            with st.spinner("🤔 正在想要问你哪些问题…"):
+                questions = fetch_clarify(req)
+            if questions:
+                st.session_state.base_request = req
+                st.session_state.clarify_questions = questions
+                st.session_state.phase = "clarify"
+                st.rerun()
+            else:
+                # 追问失败 / 无问题 → 直接规划，不阻塞。
+                run_and_store(req, "🤖 正在规划（天气 → 景点 → 酒店 → 路线 → 整合）...")
+        else:
+            run_and_store(req, "🤖 正在规划（天气 → 景点 → 酒店 → 路线 → 整合）...")
+
+
+# ============ 追问阶段：回答澄清问题 → 折叠进 extra → 规划 ============
+if st.session_state.phase == "clarify" and st.session_state.clarify_questions:
+    questions = st.session_state.clarify_questions
+    base = st.session_state.base_request or {}
+    st.markdown(
+        f'<div class="plan-title">🤔 几个小问题，帮你把 {base.get("city", "")} 行程定制得更贴心</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption("回答后点「确认并生成」；也可以直接跳过。")
+
+    for q in questions:
+        key = f"clarify_{q['id']}"
+        kind = q.get("kind", "single")
+        opts = q.get("options") or []
+        if kind == "multi" and opts:
+            st.multiselect(q["question"], opts, key=key)
+        elif kind == "single" and opts:
+            st.radio(q["question"], opts, key=key, index=None, horizontal=True)
+        else:
+            st.text_input(q["question"], key=key)
+
+    col_go, col_skip = st.columns([3, 1])
+    with col_go:
+        if st.button("✅ 确认并生成计划", type="primary", use_container_width=True):
+            new_req = fold_answers_into_request(base, questions)
+            run_and_store(new_req, "🧩 正在按你的回答定制行程…")
+    with col_skip:
+        if st.button("⏭️ 跳过", use_container_width=True):
+            run_and_store(base, "🤖 正在规划（天气 → 景点 → 酒店 → 路线 → 整合）...")
 
 
 # ============ 结果展示 ============

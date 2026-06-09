@@ -109,3 +109,17 @@ class TravelPlan(BaseModel):
     weather_info: list[WeatherInfo] = Field(default_factory=list)
     budget: Budget = Field(default_factory=Budget)
     overall_suggestions: str = ""
+
+
+# ==================== 规划前澄清提问（主动追问）====================
+
+class ClarifyQuestion(BaseModel):
+    """一条澄清问题：单选 / 多选 给候选项，开放题（text）不给选项。"""
+    question: str
+    kind: Literal["single", "multi", "text"] = "single"
+    options: list[str] = Field(default_factory=list)
+
+
+class ClarifyingQuestions(BaseModel):
+    """LLM 结构化输出的澄清问题集合（规划前主动追问）。"""
+    questions: list[ClarifyQuestion] = Field(default_factory=list)

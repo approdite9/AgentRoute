@@ -8,7 +8,7 @@ TASK D —— FastAPI 端点测试（httpx.AsyncClient + ASGITransport）。
   - 限流：走真实 Redis(db 4)；autouse 夹具在每个用例前清空 ratelimit:* 计数。
 """
 import uuid
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import httpx
 import pytest
@@ -101,3 +101,26 @@ async def test_metrics_endpoint(client):
     resp = await client.get("/metrics")
     assert resp.status_code == 200
     assert "trips_submitted_total" in resp.text
+
+
+async def test_clarify_returns_questions(client):
+    """POST /api/v1/trips/clarify → 200，返回 LLM 生成的澄清问题（LLM 调用被 mock）。"""
+    qs = [{"id": "q0", "question": "出行同伴？", "kind": "single",
+           "options": ["独自", "家庭带娃", "朋友结伴"]}]
+    with patch("agents.clarify.generate_questions", new=AsyncMock(return_value=qs)):
+        resp = await client.post(
+            "/api/v1/trips/clarify", json={"city": "三亚", "preferences": ["海滨"]}
+        )
+    assert resp.status_code == 200
+    assert resp.json()["questions"] == qs
+
+
+async def test_clarify_graceful_on_error(client):
+    """澄清问题生成失败时端点降级为空列表（200，不抛 500），不阻塞后续规划。"""
+    with patch(
+        "agents.clarify.generate_questions",
+        new=AsyncMock(side_effect=RuntimeError("LLM down")),
+    ):
+        resp = await client.post("/api/v1/trips/clarify", json={"city": "三亚"})
+    assert resp.status_code == 200
+    assert resp.json()["questions"] == []
