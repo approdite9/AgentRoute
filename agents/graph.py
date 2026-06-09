@@ -31,6 +31,8 @@ from agents.nodes import (
 
 
 def should_continue(state: TripState) -> str:
+    # error 只由 poi（唯一的 fatal 节点）写入——weather/hotel/route 为 best-effort，
+    # 失败不写 error，故它们出错时这里仍判 continue，计划照常生成（降级而非失败）。
     error = state.get("error")
     if not error:
         return "continue"

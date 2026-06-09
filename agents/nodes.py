@@ -44,13 +44,17 @@ DEFAULT_RESUME = "请继续生成完整计划"
 
 # 非瞬时错误：重试既无意义又会成倍消耗每日配额 / token，必须「快速失败」。
 #   - 高德配额类：USER_DAILY_QUERY_OVER_LIMIT / QUOTA / DAILY
-#   - 参数 / 鉴权类：INVALID_PARAMS / INVALID_KEY
+#   - 参数 / 鉴权类：INVALID_PARAMS / MISSING_REQUIRED_PARAMS / INVALID_KEY
 #   - Agent 死循环触顶：GraphRecursionError（消息含 RECURSION）
+# MISSING_REQUIRED_PARAMS：如骑行/路线工具缺 origin/destination —— 重试同样的坏参数
+# 只会重跑整段 ReAct（成倍调用），故归为永久错误、一次即止。
 _NON_RETRYABLE_TOKENS = (
     "OVER_LIMIT",
     "QUOTA",
     "DAILY_QUERY",
     "INVALID_PARAMS",
+    "MISSING_REQUIRED_PARAMS",
+    "REQUIRED_PARAMS",
     "INVALID_KEY",
     "INVALID_USER_KEY",
     "RECURSION",
@@ -124,8 +128,15 @@ async def _run_specialist(
     prompt: str,
     query: str,
     data_key: str,
+    fatal: bool = True,
 ) -> dict:
-    """weather / poi / hotel / route 子 Agent 节点的公共执行逻辑（不带缓存）。"""
+    """weather / poi / hotel / route 子 Agent 节点的公共执行逻辑（不带缓存）。
+
+    fatal=True（默认，仅 poi 用）：失败写入 error、递增 retry_count，触发图的重试/报错。
+    fatal=False（weather/hotel/route 等「增补」节点）：**最佳努力**——失败只记日志、
+      返回 data=None，且**不触碰 error**，从而不让一个非关键节点（如路线工具缺参）
+      搞垮整张计划。整条流水线的「闸门」只由 poi 把守（无景点才算真失败）。
+    """
     logger.info("node_start", node=node, city=state.get("city"))
     t0 = time.perf_counter()
     try:
@@ -137,10 +148,15 @@ async def _run_specialist(
         logger.info(
             "node_done", node=node, duration_ms=int(elapsed * 1000), cache_hit=False
         )
-        return {data_key: result, "error": None}
-    except Exception as exc:  # noqa: BLE001 —— 节点内吞掉异常并转为可分流的 error
+        # 成功：fatal 节点清空 error 作为闸门信号；best-effort 节点不触碰 error。
+        return {data_key: result, "error": None} if fatal else {data_key: result}
+    except Exception as exc:  # noqa: BLE001 —— 节点内吞掉异常
         NODE_DURATION.labels(node=node).observe(time.perf_counter() - t0)
-        return _failure(node, data_key, state, exc)
+        if fatal:
+            return _failure(node, data_key, state, exc)
+        # best-effort：降级而非失败——仅记日志，data 置空，不写 error / 不增 retry_count。
+        logger.warning("node_soft_fail", node=node, error=str(exc))
+        return {data_key: None}
 
 
 # ==================== 数据采集节点 ====================
@@ -192,10 +208,12 @@ async def weather_node(state: TripState) -> dict:
             duration_ms=int(elapsed * 1000),
             cache_hit=last_cache_hit(),
         )
-        return {"weather_data": fetched.get("content"), "error": None}
+        # best-effort：天气是增补项，不触碰 error（闸门交给 poi）。
+        return {"weather_data": fetched.get("content")}
     except Exception as exc:  # noqa: BLE001
         NODE_DURATION.labels(node="weather").observe(time.perf_counter() - t0)
-        return _failure("weather", "weather_data", state, exc)
+        logger.warning("node_soft_fail", node="weather", error=str(exc))
+        return {"weather_data": None}
 
 
 async def poi_node(state: TripState) -> dict:
@@ -232,6 +250,7 @@ async def hotel_node(state: TripState) -> dict:
         prompt=HOTEL_AGENT_PROMPT,
         query=query,
         data_key="hotel_data",
+        fatal=False,  # 酒店是增补项：搜不到也不该让整张计划失败
     )
 
 
@@ -252,6 +271,7 @@ async def route_node(state: TripState) -> dict:
         prompt=ROUTE_AGENT_PROMPT,
         query=query,
         data_key="route_data",
+        fatal=False,  # 路线是增补项：工具缺参/失败（如骑行缺坐标）也不该搞垮整张计划
     )
 
 

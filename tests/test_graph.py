@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock
 import config
 import agents.nodes as nodes
 from agents.graph import build_graph
-from agents.nodes import weather_node
+from agents.nodes import weather_node, poi_node, route_node
 from mcp_client import McpClientManager
 from schemas import TravelPlan, DayPlan
 
@@ -136,15 +136,62 @@ async def test_error_node_on_mcp_failure(sample_state, monkeypatch):
     assert final.get("error")
 
 
-async def test_retry_increments_count(sample_state, monkeypatch):
-    """单个采集节点失败时，retry_count 在返回的 state 增量中 +1。"""
+async def test_poi_failure_increments_count(sample_state, monkeypatch):
+    """关键节点 poi 失败 → 写入 error、retry_count +1（poi 是流水线唯一的失败闸门）。"""
     monkeypatch.setattr(
         nodes, "_invoke_specialist", AsyncMock(side_effect=Exception("transient timeout"))
     )
     state = _fresh_state(sample_state, city=f"城市-{uuid.uuid4()}", retry_count=0)
 
-    out = await weather_node(state)
+    out = await poi_node(state)
 
-    assert out["weather_data"] is None
+    assert out["poi_data"] is None
     assert out["error"] is not None
     assert out["retry_count"] == 1  # 0 → 1
+
+
+async def test_best_effort_node_soft_fails(sample_state, monkeypatch):
+    """weather/route 等增补节点失败 → data=None，且**不触碰 error / 不增 retry_count**。"""
+    monkeypatch.setattr(
+        nodes, "_invoke_specialist",
+        AsyncMock(side_effect=RuntimeError("MISSING_REQUIRED_PARAMS")),
+    )
+    state = _fresh_state(sample_state, city=f"城市-{uuid.uuid4()}", retry_count=0)
+
+    out_w = await weather_node(state)
+    assert out_w["weather_data"] is None
+    assert "error" not in out_w          # best-effort：不写 error
+
+    out_r = await route_node(state)
+    assert out_r["route_data"] is None
+    assert "error" not in out_r
+    assert "retry_count" not in out_r
+
+
+async def test_supplementary_failure_still_plans(sample_state, monkeypatch):
+    """route 节点失败（如骑行缺参 MISSING_REQUIRED_PARAMS）→ 计划仍照常生成，不落 error_handler。
+
+    复现用户场景：成都 + 骑行 → 路线工具失败。修好后应降级（route_data 缺失）而非整张计划失败。
+    """
+    def _by_domain(*, domain, **kw):
+        if domain == "route":
+            raise RuntimeError("MISSING_REQUIRED_PARAMS: bicycling needs origin/destination")
+        return "采集到的数据片段"
+
+    monkeypatch.setattr(nodes, "_invoke_specialist", AsyncMock(side_effect=_by_domain))
+    monkeypatch.setattr(config.Settings, "create_llm", lambda self, **kw: _FakeLLM())
+
+    graph = build_graph()
+    seen = []
+    async for event in graph.astream(
+        _fresh_state(sample_state, city=f"城市-{uuid.uuid4()}"), config=_cfg()
+    ):
+        seen.extend(event.keys())
+
+    assert "synthesize" in seen
+    assert "error_handler" not in seen   # 路线失败不再搞垮整张计划
+    final = await graph.ainvoke(
+        _fresh_state(sample_state, city=f"城市-{uuid.uuid4()}"), config=_cfg()
+    )
+    assert final.get("final_plan") is not None
+    assert final.get("error") is None
