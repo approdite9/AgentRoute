@@ -13,6 +13,32 @@
         "true"
       ],
       "port": 8502
+    },
+    {
+      "name": "app",
+      "runtimeExecutable": "/opt/anaconda3/envs/Agent/bin/streamlit",
+      "runtimeArgs": [
+        "run",
+        "app.py",
+        "--server.port",
+        "8504",
+        "--server.headless",
+        "true"
+      ],
+      "port": 8504
+    },
+    {
+      "name": "verify-clarify",
+      "runtimeExecutable": "/opt/anaconda3/envs/Agent/bin/streamlit",
+      "runtimeArgs": [
+        "run",
+        "verify_clarify.py",
+        "--server.port",
+        "8505",
+        "--server.headless",
+        "true"
+      ],
+      "port": 8505
     }
   ]
 }
