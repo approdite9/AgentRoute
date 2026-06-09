@@ -110,6 +110,14 @@ class TravelPlan(BaseModel):
     budget: Budget = Field(default_factory=Budget)
     overall_suggestions: str = ""
 
+    @model_validator(mode="after")
+    def reindex_days(self):
+        # 按位置把 day_index 归一为 0-based，避免 LLM 偶尔用 1-based 导致前端标签
+        # 显示成「Day 2 / Day 3」（2 天行程却从 2 起跳）。渲染层一律 day_index+1。
+        for i, day in enumerate(self.days):
+            day.day_index = i
+        return self
+
 
 # ==================== 规划前澄清提问（主动追问）====================
 

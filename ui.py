@@ -71,7 +71,12 @@ def _render_map(plan: dict) -> None:
     """行程地图：把景点/酒店坐标在地图上打点（带名称悬浮提示）。"""
     points = _collect_map_points(plan)
     if not points:
-        return  # 无坐标则跳过，不显示空地图
+        # 有景点但都缺坐标时给出说明，而非静默消失（避免用户以为没有地图功能）。
+        if any(d.get("attractions") for d in plan.get("days", [])):
+            st.markdown("---")
+            st.markdown("##### 🗺️ 行程地图")
+            st.caption("📍 本次未获取到景点坐标，暂无法绘制地图。")
+        return
     st.markdown("---")
     st.markdown("##### 🗺️ 行程地图")
     try:

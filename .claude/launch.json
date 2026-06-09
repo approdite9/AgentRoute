@@ -39,6 +39,19 @@
         "true"
       ],
       "port": 8505
+    },
+    {
+      "name": "verify-realplan",
+      "runtimeExecutable": "/opt/anaconda3/envs/Agent/bin/streamlit",
+      "runtimeArgs": [
+        "run",
+        "verify_realplan.py",
+        "--server.port",
+        "8506",
+        "--server.headless",
+        "true"
+      ],
+      "port": 8506
     }
   ]
 }

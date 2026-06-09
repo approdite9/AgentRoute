@@ -165,6 +165,18 @@ async def _run_specialist(
 # 填充 key 模板，因此这两个 _fetch_* 的参数名必须与模板占位符一致。
 # 返回 dict（而非裸字符串）：cache 层统一以 JSON dict 存取，也便于日后扩展字段。
 
+def _reject_empty(content: str, what: str) -> str:
+    """子 Agent 返回空/空白即视为失败并抛错——关键是**不要把空结果写进缓存**。
+
+    此前一旦工具失败但 ReAct 优雅返回空文本，`{"content": ""}` 会被缓存 TTL_POI=24h，
+    导致后续同城同偏好全部命中空缓存：景点全靠 LLM 编造、无坐标 → 地图画不出来。
+    抛错后 @cached 不缓存，poi（fatal）据此重试/报错，weather（best-effort）软失败。
+    """
+    if not content or not content.strip():
+        raise ValueError(f"{what} 返回空结果（不写入缓存）")
+    return content
+
+
 @cached("weather:{city}:{date}", TTL_WEATHER)
 async def _fetch_weather(city: str, date: str) -> dict:
     """查询天气（实际经子 Agent 调用高德 maps_weather MCP）。结果按 city+date 缓存。"""
@@ -175,7 +187,7 @@ async def _fetch_weather(city: str, date: str) -> dict:
         prompt=WEATHER_AGENT_PROMPT,
         query=query,
     )
-    return {"content": content}
+    return {"content": _reject_empty(content, "天气查询")}
 
 
 @cached("poi:{city}:{category}", TTL_POI)
@@ -188,7 +200,7 @@ async def _fetch_poi(city: str, category: str) -> dict:
         prompt=ATTRACTION_AGENT_PROMPT,
         query=query,
     )
-    return {"content": content}
+    return {"content": _reject_empty(content, "景点搜索")}
 
 
 async def weather_node(state: TripState) -> dict:
