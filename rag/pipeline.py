@@ -45,12 +45,23 @@ class RagPipeline:
         self.retriever = MultiPathRetriever(self.store, self.bm25, self.embedder, self.chunks)
         return len(chunks)
 
-    def retrieve(self, query: str, where: dict | None = None, k: int = 4, k_recall: int = 20) -> list[Chunk]:
+    def retrieve(
+        self, query: str, where: dict | None = None, k: int = 4, k_recall: int = 20,
+        *, multipath: bool = True, rerank_on: bool = True,
+    ) -> list[Chunk]:
+        """检索 top-k。multipath/rerank_on 用于消融评估（量化每个组件的增益）。"""
         if self.retriever is None or not self.chunks:
             return []
         variants = rewrite_query(query, self.rewriter_llm)
-        fused_ids = self.retriever.recall(variants, where=where, k_each=k_recall)
+        if multipath:
+            fused_ids = self.retriever.recall(variants, where=where, k_each=k_recall)
+        else:
+            # 消融：仅向量单路召回（不接 BM25 / 结构化 / RRF）。
+            qv = self.embedder.embed([variants[0]])[0]
+            fused_ids = [cid for cid, *_ in self.store.search(qv, k_recall, where)]
         candidates = [self.chunks[i] for i in fused_ids[:k_recall] if i in self.chunks]
+        if not rerank_on:
+            return candidates[:k]
         return rerank(query, candidates, top_k=k, reranker=self.reranker)
 
 

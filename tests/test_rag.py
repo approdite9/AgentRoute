@@ -165,3 +165,24 @@ def test_faithfulness_metric():
     ctx = ["成都火锅以牛油锅底地道，毛肚鸭肠必点。"]
     assert rag_eval.faithfulness("成都火锅牛油锅底很地道。", ctx) >= 0.5   # 被上下文支撑
     assert rag_eval.faithfulness("北京烤鸭天坛公园。", ctx) < 0.5          # 无支撑→低分
+
+
+def test_pipeline_ablation_flags():
+    """消融开关：仅向量单路 / 不重排 都能正常返回 ≤k 结果（供基准对比）。"""
+    pipe = get_default_pipeline()
+    full = pipe.retrieve("成都美食", where={"city": "成都"}, k=3)
+    vec_only = pipe.retrieve("成都美食", where={"city": "成都"}, k=3, multipath=False)
+    no_rerank = pipe.retrieve("成都美食", where={"city": "成都"}, k=3, rerank_on=False)
+    assert 0 < len(full) <= 3
+    assert len(vec_only) <= 3 and len(no_rerank) <= 3
+    assert all(c.meta["city"] == "成都" for c in full)
+
+
+def test_benchmark_report_structure():
+    """benchmark 产出 recall@{1,3,5} + 三种配置的 recall/mrr/延迟（量化优化方向）。"""
+    rep = rag_eval.benchmark(get_default_pipeline(), ks=(1, 3, 5))
+    assert set(rep["recall_at_k"]) == {"recall@1", "recall@3", "recall@5"}
+    assert rep["recall_at_k"]["recall@5"] >= rep["recall_at_k"]["recall@1"]  # 单调
+    for cfg in ["full(multipath+rerank)", "vector_only", "no_rerank"]:
+        m = rep["configs"][cfg]
+        assert {"recall", "mrr", "lat_ms_mean", "lat_ms_p95"} <= set(m)
