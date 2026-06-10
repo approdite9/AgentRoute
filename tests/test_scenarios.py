@@ -365,6 +365,29 @@ async def test_graph_populates_rag_context(_flush_cache, sample_state, monkeypat
     assert "成都" in final["rag_context"]
 
 
+# ============================================================
+# 六、MCP 连接切换（DashScope 托管 ↔ 高德官方，用自己的 Key 避开日配额）
+# ============================================================
+
+def test_mcp_connection_dashscope_default(monkeypatch):
+    """未设 AMAP_API_KEY → 连 DashScope 托管 MCP（Bearer 鉴权）。"""
+    monkeypatch.setattr(config.settings, "amap_api_key", "")
+    conn = config.settings.mcp_connection()
+    assert "dashscope" in conn["url"]
+    assert conn["headers"]["Authorization"].startswith("Bearer ")
+    assert config.settings.mcp_provider == "dashscope-hosted"
+
+
+def test_mcp_connection_amap_official(monkeypatch):
+    """设了 AMAP_API_KEY → 改连高德官方 MCP，key 走 ?key= 且不再带 Bearer 头。"""
+    monkeypatch.setattr(config.settings, "amap_api_key", "FAKEKEY123")
+    conn = config.settings.mcp_connection()
+    assert conn["url"].startswith("https://mcp.amap.com/mcp")
+    assert "key=FAKEKEY123" in conn["url"]
+    assert "headers" not in conn
+    assert config.settings.mcp_provider == "amap-official"
+
+
 @pytest.mark.anyio
 async def test_graph_rag_failure_is_non_fatal(_flush_cache, sample_state, monkeypatch):
     """RAG 检索抛错 → best-effort，计划照常生成（rag_context 缺失但不报错）。"""

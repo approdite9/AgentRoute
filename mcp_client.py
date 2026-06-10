@@ -43,17 +43,15 @@ class McpClientManager:
     # ==================== 连接管理 ====================
 
     async def _get_client(self) -> MultiServerMCPClient:
-        """懒加载 MCP 客户端"""
+        """懒加载 MCP 客户端。
+
+        连接配置由 CONFIG.mcp_connection() 决定：设了 AMAP_API_KEY → 连高德官方 MCP
+        （用你自己的配额，绕开 DashScope 托管 MCP 的免费日配额）；否则连 DashScope 托管 MCP。
+        """
         if self._client is None:
-            self._client = MultiServerMCPClient({
-                "amap-server": {
-                    "transport": CONFIG.mcp_transport,
-                    "url": CONFIG.mcp_url,
-                    "headers": {
-                        "Authorization": f"Bearer {CONFIG.api_key}"
-                    }
-                }
-            })
+            # 只记录提供方，绝不打印含 key 的连接 URL。
+            print(f"[mcp] connecting via provider={CONFIG.mcp_provider}")
+            self._client = MultiServerMCPClient({"amap-server": CONFIG.mcp_connection()})
         return self._client
 
     # ==================== 工具获取 ====================

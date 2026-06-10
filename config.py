@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     dashscope_api_key: str
-    model_name: str = "qwen3-max"
+    model_name: str = "deepseek-r1"
     temperature: float = 0.7
     max_tokens: int = 8192
     redis_url: str = "redis://localhost:6379"
@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     # ===== MCP 连接 / 工具分发 =====
     # langchain_mcp_adapters 传输方式；阿里百炼 amap-maps 走 HTTP 流式。
     mcp_transport: str = "streamable_http"
+
+    # ===== 高德官方 MCP（用自己的高德 Key，避开 DashScope 托管 MCP 的免费日配额）=====
+    # 一旦 .env 里设了 AMAP_API_KEY，mcp_client 自动改连高德官方 MCP（消耗你自己的配额）；
+    # 否则沿用上面的 DashScope 托管 MCP（DASHSCOPE_API_KEY 鉴权）。工具名两边一致，上层无需改。
+    # 注：高德官方 MCP 用 URL 查询参数 ?key= 鉴权（其协议如此），key 来自 .env、不入日志。
+    amap_api_key: str = ""
+    amap_mcp_url: str = "https://mcp.amap.com/mcp"
     # 按领域分发 MCP 工具子集（工具名见高德地图 MCP 暴露的真实名称）。
     # 关键：各域只暴露「完成任务所必需的最小工具集」，从源头杜绝子 Agent 调用
     # 详情/周边/地理编码等附加工具而打爆每日配额（USER_DAILY_QUERY_OVER_LIMIT）。
@@ -89,6 +96,29 @@ class Settings(BaseSettings):
     def api_key(self) -> str:
         """MCP 鉴权所用 API Key（与 DashScope 相同）。"""
         return self.dashscope_api_key
+
+    @property
+    def mcp_provider(self) -> str:
+        """当前 MCP 提供方（仅用于日志，不含 key）。"""
+        return "amap-official" if self.amap_api_key else "dashscope-hosted"
+
+    def mcp_connection(self) -> dict:
+        """返回 MultiServerMCPClient 的单服务器连接配置。
+
+        设了 amap_api_key → 连**高德官方 MCP**（消耗你自己的高德配额，key 按其协议走 URL ?key=）；
+        否则连 DashScope 托管 MCP（Bearer DASHSCOPE_API_KEY）。两边工具名一致，上层无需改。
+        """
+        if self.amap_api_key:
+            sep = "&" if "?" in self.amap_mcp_url else "?"
+            return {
+                "transport": "streamable_http",
+                "url": f"{self.amap_mcp_url}{sep}key={self.amap_api_key}",
+            }
+        return {
+            "transport": self.mcp_transport,
+            "url": self.mcp_url,
+            "headers": {"Authorization": f"Bearer {self.api_key}"},
+        }
 
     def create_llm(self, *, streaming: bool = True) -> ChatTongyi:
         # streaming=False 用于结构化输出（with_structured_output）：流式下
