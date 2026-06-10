@@ -13,6 +13,7 @@ LangGraph 节点函数 —— 行程规划流水线的各个工作单元。
     retry_count 单调递增，确保 route 处的条件边最终一定能跳出重试循环。
 """
 import json
+import re
 import time
 from typing import Any
 
@@ -557,6 +558,71 @@ def _fallback_parse(text: str) -> dict | None:
         return json.loads(match.group())
     except json.JSONDecodeError:
         return None
+
+
+_GEO_LOC_RE = re.compile(r'"location"\s*:\s*"(\d{2,3}\.\d+),(\d{1,2}\.\d+)"')
+_GEO_ANY_RE = re.compile(r"(\d{2,3}\.\d{3,}),(\d{1,2}\.\d{3,})")
+
+
+def _parse_geo_location(text: str) -> dict | None:
+    """从 maps_geo 返回里抠出第一个 'lng,lat' → {longitude, latitude}（高德 GCJ-02）。"""
+    m = _GEO_LOC_RE.search(text) or _GEO_ANY_RE.search(text)
+    if not m:
+        return None
+    return {"longitude": float(m.group(1)), "latitude": float(m.group(2))}
+
+
+async def geocode_node(state: TripState) -> dict:
+    """给最终计划里**缺坐标**的景点/酒店补经纬度（高德 maps_geo）。
+
+    best-effort：DashScope 带坐标时这些项已有 location → 跳过、0 额外调用；
+    高德回退（text_search 无坐标）时在此用 maps_geo 按「城市+名称」确定性补坐标，
+    使地图无论主路是否可用都能打点。失败/无 geo 工具均静默跳过，不影响成稿。
+    """
+    plan = state.get("final_plan")
+    if not plan or not plan.get("days"):
+        return {}
+
+    def _needs(obj: dict) -> bool:
+        return bool(obj.get("name")) and not (obj.get("location") or {}).get("longitude")
+
+    # 先收集缺坐标项；若没有则直接返回——不连 MCP（保持 DashScope 已带坐标/测试场景的 hermetic）。
+    targets: list[dict] = []
+    for day in plan["days"]:
+        targets.extend(a for a in day.get("attractions", []) if _needs(a))
+        hotel = day.get("hotel") or {}
+        if _needs(hotel):
+            targets.append(hotel)
+    if not targets:
+        return {}
+
+    city = plan.get("city") or state.get("city") or ""
+    t0 = time.perf_counter()
+    try:
+        tools = await McpClientManager().get_tools_for("geo")
+        geo = next((t for t in tools if t.name == "maps_geo"), None)
+        if geo is None:
+            return {}
+
+        filled = 0
+        for obj in targets:
+            try:
+                res = await geo.ainvoke({"address": f"{city}{obj['name']}", "city": city})
+                text = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False)
+                loc = _parse_geo_location(text)
+            except Exception:  # noqa: BLE001
+                loc = None
+            if loc:
+                obj["location"] = loc
+                filled += 1
+        logger.info(
+            "geocode_done", filled=filled, targets=len(targets),
+            duration_ms=int((time.perf_counter() - t0) * 1000), city=city,
+        )
+        return {"final_plan": plan} if filled else {}
+    except Exception as exc:  # noqa: BLE001 —— best-effort
+        logger.warning("geocode_failed", error=str(exc))
+        return {}
 
 
 async def error_node(state: TripState) -> dict:

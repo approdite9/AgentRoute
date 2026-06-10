@@ -90,6 +90,8 @@ class Settings(BaseSettings):
             "maps_direction_bicycling",
             "maps_distance",
         ],
+        # 地理编码：synthesize 之后给缺坐标的景点/酒店补经纬度（地图打点用）。
+        "geo": ["maps_geo"],
     }
 
     @property
