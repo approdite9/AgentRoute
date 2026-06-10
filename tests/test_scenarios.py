@@ -351,3 +351,32 @@ async def test_graph_empty_preferences_still_plans(_flush_cache, sample_state, m
     final = await build_graph().ainvoke(
         _fresh(sample_state, city=f"城市-{uuid.uuid4()}", preferences=[]), config=_cfg())
     assert final.get("final_plan") is not None
+
+
+@pytest.mark.anyio
+async def test_graph_populates_rag_context(_flush_cache, sample_state, monkeypatch):
+    """RAG 节点在全图中运行，把"内容证据"写入 rag_context（成都有内置语料）。"""
+    monkeypatch.setattr(nodes, "_invoke_specialist", AsyncMock(return_value="采集到的数据"))
+    monkeypatch.setattr(config.Settings, "create_llm", lambda self, **kw: _FakeLLM())
+
+    final = await build_graph().ainvoke(_fresh(sample_state, city="成都"), config=_cfg())
+    assert final.get("final_plan") is not None
+    assert final.get("rag_context")                 # 检索到攻略/口碑内容
+    assert "成都" in final["rag_context"]
+
+
+@pytest.mark.anyio
+async def test_graph_rag_failure_is_non_fatal(_flush_cache, sample_state, monkeypatch):
+    """RAG 检索抛错 → best-effort，计划照常生成（rag_context 缺失但不报错）。"""
+    monkeypatch.setattr(nodes, "_invoke_specialist", AsyncMock(return_value="采集到的数据"))
+    monkeypatch.setattr(config.Settings, "create_llm", lambda self, **kw: _FakeLLM())
+
+    import rag.pipeline as rp
+    def _boom():
+        raise RuntimeError("rag store down")
+    monkeypatch.setattr(rp, "get_default_pipeline", _boom)
+
+    final = await build_graph().ainvoke(
+        _fresh(sample_state, city=f"城市-{uuid.uuid4()}"), config=_cfg())
+    assert final.get("final_plan") is not None      # RAG 挂了也出稿
+    assert final.get("error") is None

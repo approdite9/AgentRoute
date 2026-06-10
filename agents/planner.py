@@ -127,6 +127,7 @@ class TripPlanner:
             "poi_data": None,
             "hotel_data": None,
             "route_data": None,
+            "rag_context": None,
             "final_plan": None,
             "user_feedback": None,
             "hitl_enabled": False,

@@ -287,6 +287,40 @@ async def route_node(state: TripState) -> dict:
     )
 
 
+async def rag_node(state: TripState) -> dict:
+    """RAG 检索：按城市+偏好检索旅行知识（攻略/口碑/玩法）作为整合的"内容证据"。
+
+    best-effort：检索失败 / 该城市无语料 / 无命中 都不报错（rag_context=None），
+    绝不影响计划生成。检索在线程池执行，避免（DashScope embedding 时）阻塞事件循环。
+    """
+    import asyncio
+
+    city = state.get("city", "")
+    prefs = "、".join(state.get("preferences") or []) or "热门 玩法 美食 必去"
+    logger.info("node_start", node="rag", city=city)
+    t0 = time.perf_counter()
+    try:
+        from rag.pipeline import get_default_pipeline, format_context
+
+        pipe = get_default_pipeline()
+        # 该城市有语料则按城市做结构化过滤；否则全库语义召回兜底。
+        has_city = any(c.meta.get("city") == city for c in pipe.chunks.values())
+        where = {"city": city} if has_city else None
+        query = f"{city} {prefs} 攻略 玩法 美食 避坑"
+        hits = await asyncio.to_thread(pipe.retrieve, query, where, 4)
+        ctx = format_context(hits)
+        NODE_DURATION.labels(node="rag").observe(time.perf_counter() - t0)
+        logger.info(
+            "node_done", node="rag",
+            duration_ms=int((time.perf_counter() - t0) * 1000), chunks=len(hits),
+        )
+        return {"rag_context": ctx or None}
+    except Exception as exc:  # noqa: BLE001 —— best-effort，不触碰 error
+        NODE_DURATION.labels(node="rag").observe(time.perf_counter() - t0)
+        logger.warning("node_soft_fail", node="rag", error=str(exc))
+        return {"rag_context": None}
+
+
 # ==================== 人审断点节点 ====================
 
 def _preview(val: Any, limit: int = 180) -> dict:
@@ -366,7 +400,12 @@ def _build_synthesis_input(state: TripState) -> str:
         "【路线数据】",
         str(state.get("route_data") or "（无）"),
         "",
+        "【内容参考（攻略/口碑/玩法，每条含[出处]）】",
+        str(state.get("rag_context") or "（无）"),
+        "",
         "请依据以上真实数据整合出完整旅行计划，严格按系统提示中的 JSON 格式，只输出 JSON。",
+        "可参考【内容参考】丰富景点描述、玩法与避坑建议，使行程更具体可执行；",
+        "但务必以采集到的真实数据为准，不要编造【内容参考】之外的事实。",
     ]
     return "\n".join(parts)
 

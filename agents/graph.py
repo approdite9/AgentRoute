@@ -2,9 +2,10 @@
 LangGraph StateGraph 组装 —— 把各节点连成完整的行程规划流水线。
 
 流程（首轮规划）：
-    START ─(router)→ weather → poi → hotel → route ─┬─(continue)→ review → synthesize → END
+    START ─(router)→ weather → poi → hotel → route ─┬─(continue)→ review → rag → synthesize → END
                                                      ├─(retry)───→ poi
                                                      └─(error)───→ error_handler → END
+    rag 为 RAG 内容检索节点（best-effort，攻略/口碑增强），失败不影响出稿。
 
 流程（多轮修改，复用同一 thread 的检查点）：
     START ─(router)→ synthesize → END        # 已有成稿 + 修改意见 → 直接重整合，跳过采集
@@ -23,6 +24,7 @@ from agents.nodes import (
     poi_node,
     hotel_node,
     route_node,
+    rag_node,
     review_node,
     synthesis_node,
     error_node,
@@ -66,6 +68,7 @@ def build_graph(checkpointer: Any = None) -> Any:
     builder.add_node("poi", poi_node)
     builder.add_node("hotel", hotel_node)
     builder.add_node("route", route_node)
+    builder.add_node("rag", rag_node)
     builder.add_node("review", review_node)
     builder.add_node("synthesize", synthesis_node)
     builder.add_node("error_handler", error_node)
@@ -79,13 +82,14 @@ def build_graph(checkpointer: Any = None) -> Any:
     builder.add_edge("weather", "poi")
     builder.add_edge("poi", "hotel")
     builder.add_edge("hotel", "route")
-    # 采集成功 → 进人审断点 review；其后再 → synthesize。失败仍按原逻辑重试 / 报错。
+    # 采集成功 → 人审断点 review → RAG 内容检索 → synthesize。失败仍按原逻辑重试 / 报错。
     builder.add_conditional_edges(
         "route",
         should_continue,
         {"retry": "poi", "continue": "review", "error": "error_handler"},
     )
-    builder.add_edge("review", "synthesize")
+    builder.add_edge("review", "rag")
+    builder.add_edge("rag", "synthesize")
     builder.add_edge("synthesize", END)
     builder.add_edge("error_handler", END)
 

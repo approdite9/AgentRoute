@@ -33,6 +33,7 @@ dependencies = [
     "prometheus_client",
     "httpx",
     "nest_asyncio",
+    "numpy",
 ]
 
 [project.optional-dependencies]

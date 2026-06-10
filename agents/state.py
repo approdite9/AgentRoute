@@ -23,6 +23,8 @@ class TripState(TypedDict):
     poi_data: list | None
     hotel_data: list | None
     route_data: list | None
+    # RAG 检索到的"内容证据"（攻略/口碑/玩法），best-effort：取不到则为 None。
+    rag_context: str | None
 
     # Final output
     final_plan: dict | None
