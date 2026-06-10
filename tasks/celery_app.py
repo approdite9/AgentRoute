@@ -40,8 +40,10 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     task_track_started=True,          # 让 AsyncResult 能区分 PENDING / STARTED
-    task_time_limit=180,              # 3 min 硬超时（SIGKILL）
-    task_soft_time_limit=150,         # 2.5 min 软超时（抛 SoftTimeLimitExceeded）
+    # 推理模型（deepseek-r1）单步就要数十秒，4 个子 Agent + RAG + 整合叠加可达数分钟，
+    # 故放宽超时；换指令模型（qwen3-max/deepseek-v3）可调回更紧的值。
+    task_time_limit=660,              # 11 min 硬超时（SIGKILL）
+    task_soft_time_limit=600,         # 10 min 软超时（抛 SoftTimeLimitExceeded）
     result_expires=3600,             # 结果在 backend 中保留 1h
     task_routes={
         "tasks.trip_tasks.plan_trip": {"queue": "trip.planning"},

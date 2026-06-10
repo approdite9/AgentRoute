@@ -58,6 +58,9 @@ _NON_RETRYABLE_TOKENS = (
     "INVALID_KEY",
     "INVALID_USER_KEY",
     "RECURSION",
+    # 模型生成了非法的 tool_call 参数（DashScope 400）——重试只会重复同样的坏调用。
+    "INVALIDPARAMETER",
+    "MUST BE IN JSON",
 )
 
 
@@ -107,7 +110,10 @@ async def _invoke_specialist(
     # 1. 现场创建 LLM（不在模块级缓存）+ 按领域取 MCP 工具
     from config import settings
 
-    llm = settings.create_llm()
+    # 子 Agent 用**非流式** LLM：流式下 ChatTongyi 的 tool_call args 由增量拼装，
+    # 偶发组装成非法 JSON → DashScope 400「function.arguments must be in JSON format」，
+    # 并被 ReAct/tenacity 放大成反复调用。非流式让工具参数一次成型，更稳（与 synthesize 一致）。
+    llm = settings.create_llm(streaming=False)
     tools = await McpClientManager().get_tools_for(domain)
     agent = SpecialistAgent(llm, agent_name, prompt, tools)
 
