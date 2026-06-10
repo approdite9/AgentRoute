@@ -369,23 +369,50 @@ async def test_graph_populates_rag_context(_flush_cache, sample_state, monkeypat
 # 六、MCP 连接切换（DashScope 托管 ↔ 高德官方，用自己的 Key 避开日配额）
 # ============================================================
 
-def test_mcp_connection_dashscope_default(monkeypatch):
-    """未设 AMAP_API_KEY → 连 DashScope 托管 MCP（Bearer 鉴权）。"""
-    monkeypatch.setattr(config.settings, "amap_api_key", "")
-    conn = config.settings.mcp_connection()
+def test_mcp_primary_is_dashscope():
+    """主路恒为 DashScope 托管 MCP（带坐标、Bearer 鉴权）。"""
+    conn = config.settings.mcp_connection_primary()
     assert "dashscope" in conn["url"]
     assert conn["headers"]["Authorization"].startswith("Bearer ")
-    assert config.settings.mcp_provider == "dashscope-hosted"
 
 
-def test_mcp_connection_amap_official(monkeypatch):
-    """设了 AMAP_API_KEY → 改连高德官方 MCP，key 走 ?key= 且不再带 Bearer 头。"""
+def test_mcp_fallback_enabled_only_with_amap_key(monkeypatch):
+    """未设 AMAP_API_KEY → 无回退（dashscope-only）；设了 → 高德官方回退（?key=, 无 Bearer）。"""
+    monkeypatch.setattr(config.settings, "amap_api_key", "")
+    assert config.settings.mcp_connection_fallback() is None
+    assert config.settings.mcp_provider == "dashscope-only"
+
     monkeypatch.setattr(config.settings, "amap_api_key", "FAKEKEY123")
-    conn = config.settings.mcp_connection()
-    assert conn["url"].startswith("https://mcp.amap.com/mcp")
-    assert "key=FAKEKEY123" in conn["url"]
-    assert "headers" not in conn
-    assert config.settings.mcp_provider == "amap-official"
+    fb = config.settings.mcp_connection_fallback()
+    assert fb["url"].startswith("https://mcp.amap.com/mcp") and "key=FAKEKEY123" in fb["url"]
+    assert "headers" not in fb
+    assert config.settings.mcp_provider == "dashscope-primary+amap-fallback"
+
+
+@pytest.mark.anyio
+async def test_fallback_tool_primary_then_amap():
+    """_FallbackTool：主路成功不回退；主路配额/异常 → 回退到高德。"""
+    from pydantic import BaseModel
+    from mcp_client import _FallbackTool
+
+    class _Args(BaseModel):
+        keywords: str = ""
+
+    def _tool(prim, fb):
+        return _FallbackTool(name="maps_text_search", description="d",
+                             args_schema=_Args, primary=prim, fallback=fb)
+
+    fb = AsyncMock(); fb.ainvoke = AsyncMock(return_value="amap结果")
+
+    ok = AsyncMock(); ok.ainvoke = AsyncMock(return_value="dashscope结果")
+    assert await _tool(ok, fb)._arun(keywords="成都") == "dashscope结果"
+    fb.ainvoke.assert_not_called()                       # 主路成功不回退
+
+    quota = AsyncMock(); quota.ainvoke = AsyncMock(return_value="USER_DAILY_QUERY_OVER_LIMIT")
+    assert await _tool(quota, fb)._arun(keywords="成都") == "amap结果"   # 配额文本→回退
+
+    err = AsyncMock(); err.ainvoke = AsyncMock(side_effect=RuntimeError("boom"))
+    assert await _tool(err, fb)._arun(keywords="成都") == "amap结果"     # 异常→回退
 
 
 @pytest.mark.anyio

@@ -99,25 +99,27 @@ class Settings(BaseSettings):
 
     @property
     def mcp_provider(self) -> str:
-        """当前 MCP 提供方（仅用于日志，不含 key）。"""
-        return "amap-official" if self.amap_api_key else "dashscope-hosted"
+        """当前 MCP 策略（仅用于日志，不含 key）。"""
+        return "dashscope-primary+amap-fallback" if self.amap_api_key else "dashscope-only"
 
-    def mcp_connection(self) -> dict:
-        """返回 MultiServerMCPClient 的单服务器连接配置。
-
-        设了 amap_api_key → 连**高德官方 MCP**（消耗你自己的高德配额，key 按其协议走 URL ?key=）；
-        否则连 DashScope 托管 MCP（Bearer DASHSCOPE_API_KEY）。两边工具名一致，上层无需改。
-        """
-        if self.amap_api_key:
-            sep = "&" if "?" in self.amap_mcp_url else "?"
-            return {
-                "transport": "streamable_http",
-                "url": f"{self.amap_mcp_url}{sep}key={self.amap_api_key}",
-            }
+    def mcp_connection_primary(self) -> dict:
+        """主路：DashScope 托管 amap-maps MCP（Bearer 鉴权）。其 maps_text_search **带经纬度**，
+        地图打点依赖它；但有免费日配额。"""
         return {
             "transport": self.mcp_transport,
             "url": self.mcp_url,
             "headers": {"Authorization": f"Bearer {self.api_key}"},
+        }
+
+    def mcp_connection_fallback(self) -> dict | None:
+        """回退路：高德官方 MCP（用你自己的 Key，?key= 鉴权）。仅在设了 AMAP_API_KEY 时启用。
+        主路配额耗尽/失败时顶上，保证"内容拿得到"（注：高德官方 text_search 不返回坐标）。"""
+        if not self.amap_api_key:
+            return None
+        sep = "&" if "?" in self.amap_mcp_url else "?"
+        return {
+            "transport": "streamable_http",
+            "url": f"{self.amap_mcp_url}{sep}key={self.amap_api_key}",
         }
 
     def create_llm(self, *, streaming: bool = True) -> ChatTongyi:
