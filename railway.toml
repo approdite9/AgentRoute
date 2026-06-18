@@ -1,0 +1,18 @@
+# Railway 部署配置
+# 文档：https://docs.railway.com/reference/config-as-code
+#
+# 本项目有三个代码服务（api / worker / streamlit），
+# 在 Railway Dashboard 中分别创建并指定下方对应的 startCommand。
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# 默认服务：FastAPI API
+# Railway 自动注入 $PORT；其余服务在 Dashboard 里覆盖 startCommand。
+startCommand = "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
