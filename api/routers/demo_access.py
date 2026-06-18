@@ -8,6 +8,7 @@
   POST /admin/demo/approve/{uid}  管理员：增加配额
   POST /admin/demo/block/{uid}    管理员：封禁用户
 """
+import hmac
 import os
 import secrets
 import uuid
@@ -61,7 +62,7 @@ def _utcnow() -> datetime:
 def _verify_admin(x_admin_password: str = Header(default="")):
     if not _ADMIN_PASSWORD:
         raise HTTPException(status_code=503, detail="管理密码未配置，管理接口不可用")
-    if x_admin_password != _ADMIN_PASSWORD:
+    if not hmac.compare_digest(x_admin_password, _ADMIN_PASSWORD):
         raise HTTPException(status_code=403, detail="管理密码错误")
 
 
@@ -102,7 +103,7 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)) -> 
     )
     db.add(user)
     await db.commit()
-    logger.info("demo_user_registered", email=email_lower, user_id=str(user.id))
+    logger.info("demo_user_registered", user_id=str(user.id))
     return {"token": token, "already_registered": False, "can_use": True}
 
 
@@ -147,7 +148,7 @@ async def use_quota(req: UseRequest, db: AsyncSession = Depends(get_db)) -> dict
     user.used_count += 1
     user.last_used_at = _utcnow()
     await db.commit()
-    logger.info("demo_quota_used", email=user.email, used=user.used_count, quota=user.quota)
+    logger.info("demo_quota_used", user_id=str(user.id), used=user.used_count, quota=user.quota)
     return {"ok": True, "remaining": user.quota - user.used_count}
 
 
@@ -202,7 +203,7 @@ async def approve_user(
     if req.notes:
         user.admin_notes = req.notes
     await db.commit()
-    logger.info("demo_user_approved", email=user.email, new_quota=user.quota)
+    logger.info("demo_user_approved", user_id=user_id, new_quota=user.quota)
     return {"ok": True, "new_quota": user.quota, "remaining": user.quota - user.used_count}
 
 
@@ -224,5 +225,5 @@ async def block_user(
 
     user.is_blocked = True
     await db.commit()
-    logger.info("demo_user_blocked", email=user.email)
+    logger.info("demo_user_blocked", user_id=user_id)
     return {"ok": True}

@@ -11,14 +11,14 @@ import uuid
 
 import structlog
 from celery.result import AsyncResult
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.deps import get_pubsub_redis
-from db.models import TripPlan
+from db.models import DemoUser, TripPlan
 from db.session import get_db
 from monitoring.metrics import TRIPS_SUBMITTED
 from tasks.celery_app import celery_app
@@ -120,17 +120,27 @@ async def clarify_trip(req: TripRequest) -> dict:
 
 @router.get("/trips/history")
 async def trip_history(
-    user_id: str | None = None,
+    x_demo_token: str = Header(default=""),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     """
-    返回最近 20 条规划历史。传 user_id 则按用户过滤。
+    返回当前 token 用户的最近 20 条规划历史。
 
     路由顺序很关键：必须声明在 /trips/{task_id} 之前，否则 "history" 会被当作 task_id。
     """
-    stmt = select(TripPlan).order_by(TripPlan.created_at.desc()).limit(20)
-    if user_id:
-        stmt = stmt.where(TripPlan.user_id == user_id)
+    if not x_demo_token:
+        return []
+    user = (
+        await db.execute(select(DemoUser).where(DemoUser.token == x_demo_token))
+    ).scalar_one_or_none()
+    if not user or user.is_blocked:
+        return []
+    stmt = (
+        select(TripPlan)
+        .where(TripPlan.user_id == x_demo_token)
+        .order_by(TripPlan.created_at.desc())
+        .limit(20)
+    )
     rows = (await db.execute(stmt)).scalars().all()
     return [
         {
@@ -197,8 +207,19 @@ async def _event_stream(task_id: str):
 
 
 @router.get("/trips/{task_id}/stream")
-async def stream_trip(task_id: str) -> StreamingResponse:
+async def stream_trip(
+    task_id: str,
+    x_demo_token: str = Header(default=""),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
     """SSE 端点：订阅 Redis pub/sub，把规划过程实时推给浏览器。"""
+    if not x_demo_token:
+        raise HTTPException(status_code=401, detail="Demo token required")
+    user = (
+        await db.execute(select(DemoUser).where(DemoUser.token == x_demo_token))
+    ).scalar_one_or_none()
+    if not user or user.is_blocked:
+        raise HTTPException(status_code=403, detail="Invalid or blocked token")
     return StreamingResponse(
         _event_stream(task_id),
         media_type="text/event-stream",

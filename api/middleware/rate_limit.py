@@ -33,7 +33,14 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if path.startswith(_EXEMPT_PREFIXES):
             return await call_next(request)
 
-        client_ip = request.client.host if request.client else "unknown"
+        # X-Forwarded-For contains the real client IP when behind Railway's proxy.
+        x_forwarded_for = request.headers.get("x-forwarded-for")
+        if x_forwarded_for:
+            client_ip = x_forwarded_for.split(",")[0].strip()
+        elif request.client:
+            client_ip = request.client.host
+        else:
+            client_ip = "unknown"
         now = int(time.time())
         window = now // 60
         key = f"ratelimit:{client_ip}:{window}"
