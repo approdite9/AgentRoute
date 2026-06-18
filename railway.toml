@@ -1,18 +1,29 @@
 # Railway 部署配置
 # 文档：https://docs.railway.com/reference/config-as-code
 #
-# 本项目有三个代码服务（api / worker / streamlit），
-# 在 Railway Dashboard 中分别创建并指定下方对应的 startCommand。
+# [variables] 中的 ${{Postgres.DATABASE_URL}} / ${{Redis.REDIS_URL}}
+# 是 Railway 插件变量引用语法，部署时自动解析，无需在 UI 手动填写。
+# 仍需在 Railway UI 的 Variables 标签页手动填写：
+#   - DASHSCOPE_API_KEY
+#   - ADMIN_PASSWORD
 
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# 默认服务：FastAPI API
-# Railway 自动注入 $PORT；其余服务在 Dashboard 里覆盖 startCommand。
 startCommand = "sh -c 'uvicorn api.main:app --host 0.0.0.0 --port $PORT'"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
+
+[variables]
+DATABASE_URL = "${{Postgres.DATABASE_URL}}"
+REDIS_URL = "${{Redis.REDIS_URL}}"
+PYTHONPATH = "/app"
+MODEL_NAME = "qwen3-max"
+TEMPERATURE = "0.7"
+MAX_TOKENS = "8192"
+LANGCHAIN_TRACING_V2 = "false"
+RATE_LIMIT_PER_MINUTE = "10"

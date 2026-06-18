@@ -1,6 +1,7 @@
 """
 配置中心 —— 统一管理环境变量、LLM 实例、MCP 连接参数。
 """
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from langchain_community.chat_models.tongyi import ChatTongyi
 
@@ -93,6 +94,18 @@ class Settings(BaseSettings):
         # 地理编码：synthesize 之后给缺坐标的景点/酒店补经纬度（地图打点用）。
         "geo": ["maps_geo"],
     }
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def fix_db_url(cls, v: str) -> str:
+        """Railway 注入的 DATABASE_URL 前缀是 postgresql:// 或 postgres://，
+        SQLAlchemy asyncpg 驱动需要 postgresql+asyncpg://，自动修正。"""
+        if isinstance(v, str):
+            if v.startswith("postgres://"):
+                return v.replace("postgres://", "postgresql+asyncpg://", 1)
+            if v.startswith("postgresql://"):
+                return v.replace("postgresql://", "postgresql+asyncpg://", 1)
+        return v
 
     @property
     def api_key(self) -> str:
