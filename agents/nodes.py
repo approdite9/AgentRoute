@@ -25,7 +25,15 @@ from langgraph.types import interrupt
 from agents.state import TripState
 from agents.specialist import SpecialistAgent
 from mcp_client import McpClientManager
-from cache.client import cached, last_cache_hit, TTL_WEATHER, TTL_POI
+from cache.client import (
+    cached,
+    last_cache_hit,
+    TTL_WEATHER,
+    TTL_POI,
+    TTL_HOTEL,
+    TTL_ROUTE,
+    TTL_GEO,
+)
 from monitoring.metrics import NODE_DURATION
 from render import parse_plan
 from prompts import (
@@ -257,41 +265,77 @@ async def poi_node(state: TripState) -> dict:
         return _failure("poi", "poi_data", state, exc)
 
 
-async def hotel_node(state: TripState) -> dict:
-    """按住宿偏好搜索酒店。"""
-    hotel_type = state.get("hotel_type") or "不限类型"
-    query = f"请在「{state['city']}」搜索「{hotel_type}」的酒店。"
-    return await _run_specialist(
-        state,
-        node="hotel",
+@cached("hotel:{city}:{hotel_type}", TTL_HOTEL)
+async def _fetch_hotel(city: str, hotel_type: str) -> dict:
+    """按住宿偏好搜酒店（经子 Agent 调用高德 POI MCP）。按 city+hotel_type 缓存。"""
+    query = f"请在「{city}」搜索「{hotel_type}」的酒店。"
+    content = await _invoke_specialist(
         domain="hotel",
         agent_name="HotelAgent",
         prompt=HOTEL_AGENT_PROMPT,
         query=query,
-        data_key="hotel_data",
-        fatal=False,  # 酒店是增补项：搜不到也不该让整张计划失败
     )
+    return {"content": _reject_empty(content, "酒店搜索")}
 
 
-async def route_node(state: TripState) -> dict:
-    """根据交通偏好和已搜到的景点，规划景点间路线（调用 MCP 路线工具）。"""
-    transport = "、".join(state.get("transport") or []) or "不限交通方式"
-    poi = state.get("poi_data") or "（暂无景点数据，请基于城市常识规划主要景点间路线）"
+async def hotel_node(state: TripState) -> dict:
+    """按住宿偏好搜索酒店（命中缓存时跳过 LLM+MCP 调用）。best-effort：失败软降级。"""
+    city = state["city"]
+    hotel_type = state.get("hotel_type") or "不限类型"
+    logger.info("node_start", node="hotel", city=city)
+    t0 = time.perf_counter()
+    try:
+        fetched = await _fetch_hotel(city, hotel_type)
+        NODE_DURATION.labels(node="hotel").observe(time.perf_counter() - t0)
+        logger.info(
+            "node_done", node="hotel",
+            duration_ms=int((time.perf_counter() - t0) * 1000), cache_hit=last_cache_hit(),
+        )
+        return {"hotel_data": fetched.get("content")}
+    except Exception as exc:  # noqa: BLE001 —— 酒店是增补项，软失败不搞垮整张计划
+        NODE_DURATION.labels(node="hotel").observe(time.perf_counter() - t0)
+        logger.warning("node_soft_fail", node="hotel", error=str(exc))
+        return {"hotel_data": None}
+
+
+@cached("route:{city}:{transport}:{prefs}", TTL_ROUTE)
+async def _fetch_route(city: str, transport: str, prefs: str, poi: str) -> dict:
+    """规划景点间路线。按 city+transport+prefs 缓存——poi（景点文本）对同一 city+prefs
+    是确定的（poi 自身已缓存），故不入键、仅用于构造查询，避免大文本进缓存键。"""
     query = (
-        f"城市：{state['city']}。出行交通偏好：{transport}。\n"
+        f"城市：{city}。出行交通偏好：{transport}。\n"
         f"以下是候选景点信息：\n{poi}\n"
         f"请据此规划主要景点之间的交通路线。"
     )
-    return await _run_specialist(
-        state,
-        node="route",
+    content = await _invoke_specialist(
         domain="route",
         agent_name="RouteAgent",
         prompt=ROUTE_AGENT_PROMPT,
         query=query,
-        data_key="route_data",
-        fatal=False,  # 路线是增补项：工具缺参/失败（如骑行缺坐标）也不该搞垮整张计划
     )
+    return {"content": _reject_empty(content, "路线规划")}
+
+
+async def route_node(state: TripState) -> dict:
+    """规划景点间路线（命中缓存时跳过 LLM+MCP 调用）。best-effort：失败软降级。"""
+    city = state["city"]
+    transport = "、".join(state.get("transport") or []) or "不限交通方式"
+    prefs = "、".join(state.get("preferences") or []) or "综合各类热门"
+    poi = state.get("poi_data") or "（暂无景点数据，请基于城市常识规划主要景点间路线）"
+    logger.info("node_start", node="route", city=city)
+    t0 = time.perf_counter()
+    try:
+        fetched = await _fetch_route(city, transport, prefs, poi)
+        NODE_DURATION.labels(node="route").observe(time.perf_counter() - t0)
+        logger.info(
+            "node_done", node="route",
+            duration_ms=int((time.perf_counter() - t0) * 1000), cache_hit=last_cache_hit(),
+        )
+        return {"route_data": fetched.get("content")}
+    except Exception as exc:  # noqa: BLE001 —— 路线是增补项，软失败不搞垮整张计划
+        NODE_DURATION.labels(node="route").observe(time.perf_counter() - t0)
+        logger.warning("node_soft_fail", node="route", error=str(exc))
+        return {"route_data": None}
 
 
 async def rag_node(state: TripState) -> dict:
@@ -601,6 +645,21 @@ def _parse_geo_location(text: str) -> dict | None:
     return {"longitude": float(m.group(1)), "latitude": float(m.group(2))}
 
 
+@cached("geo:{city}:{name}", TTL_GEO)
+async def _geocode_one(city: str, name: str, geo_tool) -> dict:
+    """按「城市+名称」地理编码一个地点 → {longitude, latitude}（高德 GCJ-02），结果长缓存。
+
+    坐标基本不变，缓存 30 天；解析不到坐标时抛错（@cached 不缓存失败，下次可重试）。
+    geo_tool 不参与缓存键（同名地点坐标与所用工具无关）。
+    """
+    res = await geo_tool.ainvoke({"address": f"{city}{name}", "city": city})
+    text = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False)
+    loc = _parse_geo_location(text)
+    if not loc:
+        raise ValueError(f"geo 未解析到坐标：{city}{name}")
+    return loc
+
+
 async def geocode_node(state: TripState) -> dict:
     """给最终计划里**缺坐标**的景点/酒店补经纬度（高德 maps_geo）。
 
@@ -636,10 +695,8 @@ async def geocode_node(state: TripState) -> dict:
         filled = 0
         for obj in targets:
             try:
-                res = await geo.ainvoke({"address": f"{city}{obj['name']}", "city": city})
-                text = res if isinstance(res, str) else json.dumps(res, ensure_ascii=False)
-                loc = _parse_geo_location(text)
-            except Exception:  # noqa: BLE001
+                loc = await _geocode_one(city, obj["name"], geo)  # 命中缓存即跳过 MCP
+            except Exception:  # noqa: BLE001 —— 未解析到坐标 / 工具失败 → 跳过该点
                 loc = None
             if loc:
                 obj["location"] = loc

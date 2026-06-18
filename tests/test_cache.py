@@ -98,3 +98,78 @@ async def test_cached_decorator_distinct_args_not_shared():
     await fetch(f"a-{uuid.uuid4()}")
     await fetch(f"b-{uuid.uuid4()}")
     assert calls["n"] == 2
+
+
+# ==================== 新增缓存：hotel / route / geo（节点级 @cached）====================
+
+async def _del_keys(*keys: str) -> None:
+    """删除指定 db2 键，避免新缓存（hotel/route/geo，非 test:* 前缀）污染后续用例。"""
+    client = aioredis.from_url(settings.redis_url, db=2, decode_responses=True)
+    for k in keys:
+        await client.delete(k)
+    await client.aclose()
+
+
+async def test_fetch_hotel_cached(monkeypatch):
+    """_fetch_hotel：相同 city+hotel_type 第二次命中缓存，底层 LLM+MCP 只调一次。"""
+    from agents import nodes
+
+    calls = {"n": 0}
+
+    async def fake_specialist(**kwargs):
+        calls["n"] += 1
+        return "酒店A | 地址 | 300-500元 | 4.7"
+
+    monkeypatch.setattr(nodes, "_invoke_specialist", fake_specialist)
+    city, htype = f"缓存城A-{uuid.uuid4().hex[:6]}", "经济型"
+    try:
+        r1 = await nodes._fetch_hotel(city, htype)
+        assert last_cache_hit() is False
+        r2 = await nodes._fetch_hotel(city, htype)
+        assert last_cache_hit() is True
+        assert calls["n"] == 1 and r1 == r2
+    finally:
+        await _del_keys(f"hotel:{city}:{htype}")
+
+
+async def test_fetch_route_cached_excludes_poi_from_key(monkeypatch):
+    """_fetch_route：键只含 city+transport+prefs；poi 文本不同也命中（验证大文本不入键）。"""
+    from agents import nodes
+
+    calls = {"n": 0}
+
+    async def fake_specialist(**kwargs):
+        calls["n"] += 1
+        return "起点→终点 | 公交 | 5km | 20分钟 | 约4元"
+
+    monkeypatch.setattr(nodes, "_invoke_specialist", fake_specialist)
+    city, tr, pr = f"缓存城R-{uuid.uuid4().hex[:6]}", "公共交通", "历史文化"
+    try:
+        await nodes._fetch_route(city, tr, pr, "POI 文本 1")
+        await nodes._fetch_route(city, tr, pr, "完全不同的 POI 文本 2")
+        assert calls["n"] == 1  # 同 city/transport/prefs → 第二次命中（poi 未入键）
+        assert last_cache_hit() is True
+    finally:
+        await _del_keys(f"route:{city}:{tr}:{pr}")
+
+
+async def test_geocode_one_cached(monkeypatch):
+    """_geocode_one：相同 city+name 第二次命中缓存，maps_geo 只真正调一次。"""
+    from agents import nodes
+
+    calls = {"n": 0}
+
+    class FakeGeo:
+        async def ainvoke(self, payload):
+            calls["n"] += 1
+            return '{"location":"116.397128,39.916527"}'
+
+    city, name = f"缓存城G-{uuid.uuid4().hex[:6]}", "天安门"
+    try:
+        loc1 = await nodes._geocode_one(city, name, FakeGeo())
+        loc2 = await nodes._geocode_one(city, name, FakeGeo())
+        assert calls["n"] == 1
+        assert loc1 == loc2 == {"longitude": 116.397128, "latitude": 39.916527}
+        assert last_cache_hit() is True
+    finally:
+        await _del_keys(f"geo:{city}:{name}")
