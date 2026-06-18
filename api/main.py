@@ -24,7 +24,8 @@ from monitoring.metrics import render_latest
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 启动阶段：暂无需预热的资源（redis 客户端 / DB 引擎均按需懒加载）。
+    if not settings.dashscope_api_key:
+        raise RuntimeError("DASHSCOPE_API_KEY is not set — API service cannot start without it")
     yield
     # 关闭阶段：优雅释放 redis.asyncio 连接与数据库连接池。
     await close_redis()

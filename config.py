@@ -43,7 +43,7 @@ ChatTongyi.subtract_client_response = _patched_subtract
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    dashscope_api_key: str
+    dashscope_api_key: str = ""  # API/worker 服务必须设置；Streamlit 仅调 FastAPI 可为空
     model_name: str = "deepseek-r1"
     temperature: float = 0.7
     max_tokens: int = 8192
