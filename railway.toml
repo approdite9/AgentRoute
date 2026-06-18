@@ -12,10 +12,8 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-# startCommand 不在此处设置 —— 每个服务在 Railway Dashboard > Settings > Start Command 单独配置，
-# 避免同一仓库的多个服务（worker/streamlit/api）都跑 api 的启动命令。
-healthcheckPath = "/health"
-healthcheckTimeout = 300
+# startCommand 和 healthcheckPath 均不在此处设置 —— 每个服务在 Railway Dashboard 单独配置，
+# 避免 worker（无 HTTP）被 /health 探活超时判定为失败。
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 
