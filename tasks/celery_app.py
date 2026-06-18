@@ -45,11 +45,10 @@ celery_app.conf.update(
     task_time_limit=660,              # 11 min 硬超时（SIGKILL）
     task_soft_time_limit=600,         # 10 min 软超时（抛 SoftTimeLimitExceeded）
     result_expires=3600,             # 结果在 backend 中保留 1h
-    task_routes={
-        "tasks.trip_tasks.plan_trip": {"queue": "trip.planning"},
-        "tasks.trip_tasks.fetch_weather": {"queue": "trip.weather"},
-        "tasks.trip_tasks.fetch_poi": {"queue": "trip.poi"},
-    },
+    # 不做自定义队列路由：本项目只有 plan_trip 一个 Celery 任务（weather/poi 等是
+    # LangGraph 图内节点，并非独立 Celery 任务）。此前把任务路由到 trip.planning，
+    # 一旦 worker 启动命令漏了 `-Q trip.planning` 就永远取不到任务、前端卡在「开始规划」。
+    # 改走默认队列（celery），任何 `celery -A tasks.celery_app worker` 都能消费，杜绝该坑。
 )
 
 # 确保 worker 启动时任务模块被导入并注册到该 app。
