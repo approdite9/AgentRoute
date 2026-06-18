@@ -11,7 +11,7 @@ dockerfilePath = "Dockerfile"
 [deploy]
 # 默认服务：FastAPI API
 # Railway 自动注入 $PORT；其余服务在 Dashboard 里覆盖 startCommand。
-startCommand = "uvicorn api.main:app --host 0.0.0.0 --port $PORT"
+startCommand = "sh -c 'uvicorn api.main:app --host 0.0.0.0 --port $PORT'"
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
