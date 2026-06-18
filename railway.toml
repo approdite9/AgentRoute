@@ -12,7 +12,8 @@ builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "sh -c 'alembic upgrade head && uvicorn api.main:app --host 0.0.0.0 --port $PORT'"
+# startCommand 不在此处设置 —— 每个服务在 Railway Dashboard > Settings > Start Command 单独配置，
+# 避免同一仓库的多个服务（worker/streamlit/api）都跑 api 的启动命令。
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
