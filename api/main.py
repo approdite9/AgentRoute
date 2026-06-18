@@ -29,7 +29,8 @@ async def lifespan(app: FastAPI):
     yield
     # 关闭阶段：优雅释放 redis.asyncio 连接与数据库连接池。
     await close_redis()
-    await engine.dispose()
+    if engine is not None:
+        await engine.dispose()
 
 
 app = FastAPI(title="Travel Agent API", version="1.0.0", lifespan=lifespan)

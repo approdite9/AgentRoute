@@ -20,21 +20,14 @@ from sqlalchemy.pool import NullPool
 
 from config import settings
 
-
-def _require_db_url() -> str:
-    url = settings.database_url
-    if not url:
-        raise RuntimeError(
-            "DATABASE_URL is not set. "
-            "Add it in Railway Dashboard > AgentRoute > Variables."
-        )
-    return url
-
-
-# FastAPI 进程内共享的带池引擎（单一长驻事件循环）。
-# 懒加载：导入时不建连接，首次调用 get_db() 时才创建，避免缺 URL 时启动即崩。
-engine = create_async_engine(_require_db_url(), pool_size=10, max_overflow=20)
-AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+# 仅在 DATABASE_URL 有效时才建引擎；URL 为空时推迟到 get_db() 调用报错，
+# 避免 alembic env.py 导入 Base 时因环境变量未就绪而崩溃。
+if settings.database_url:
+    engine = create_async_engine(settings.database_url, pool_size=10, max_overflow=20)
+    AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
+else:
+    engine = None  # type: ignore[assignment]
+    AsyncSessionLocal = None  # type: ignore[assignment]
 
 
 class Base(DeclarativeBase):
@@ -43,6 +36,8 @@ class Base(DeclarativeBase):
 
 async def get_db() -> AsyncIterator[AsyncSession]:
     """FastAPI 依赖：每个请求一个会话，结束自动关闭。"""
+    if AsyncSessionLocal is None:
+        raise RuntimeError("DATABASE_URL is not set — add it in Railway Dashboard > Variables")
     async with AsyncSessionLocal() as session:
         yield session
 
