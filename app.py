@@ -602,13 +602,14 @@ with st.sidebar:
         elif not history:
             st.caption("暂无记录")
         else:
+            st.caption("点击已完成（✅）的行程即可回看完整计划")
             for r in history[:10]:
-                icon = {"done": "✅", "error": "❌", "planning": "⏳", "pending": "⏳"}.get(r.get("status"), "•")
+                status = r.get("status")
+                icon = {"done": "✅", "error": "❌", "planning": "⏳", "pending": "⏳"}.get(status, "•")
                 label = f"{icon} {r.get('city', '')} · {r.get('start_date', '')}~{r.get('end_date', '')}"
-                if r.get("status") == "done":
-                    c_txt, c_btn = st.columns([3, 1])
-                    c_txt.caption(label)
-                    if c_btn.button("查看", key=f"view_{r['id']}", use_container_width=True):
+                if status == "done":
+                    # 整行做成按钮：窄侧边栏里比 columns + 小按钮更稳、更好点。
+                    if st.button(label, key=f"view_{r['id']}", use_container_width=True):
                         with st.spinner("加载行程…"):
                             past = fetch_trip_plan(r["id"])
                         if past:
