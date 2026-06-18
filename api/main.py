@@ -12,7 +12,6 @@ from logging_config import configure_logging
 configure_logging()
 
 from fastapi import FastAPI, Response
-from prometheus_fastapi_instrumentator import Instrumentator
 
 from api.deps import close_redis
 from api.middleware.rate_limit import RateLimitMiddleware
@@ -49,11 +48,6 @@ if settings.sentry_dsn:
 
 # 限流中间件（最外层，先于业务逻辑拦截）。
 app.add_middleware(RateLimitMiddleware)
-
-# Prometheus：用 instrumentator 采集 HTTP 级指标（时延/错误率），但 **不** 用它的
-# .expose()——多进程模式下需要聚合 worker 进程的指标文件，故自定义 /metrics 端点。
-Instrumentator().instrument(app)
-
 
 @app.get("/metrics")
 def metrics() -> Response:

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Header
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,7 +35,7 @@ admin_router = APIRouter(tags=["admin"])
 
 class RegisterRequest(BaseModel):
     name: str
-    email: str
+    email: str  # 格式校验在 Streamlit 前端做，后端只存储
     purpose: str = ""
 
 
