@@ -386,6 +386,28 @@ def review_node(state: TripState) -> dict:
 
 def _build_synthesis_input(state: TripState) -> str:
     """把已采集的全部数据 + 行程参数拼成给整合 LLM 的输入。"""
+    # 旅行人群画像：拼成一行「同伴类型 · N人 · 预算档位」，缺省项省略。
+    persona_bits = []
+    if state.get("party_type"):
+        persona_bits.append(str(state["party_type"]))
+    if state.get("party_size"):
+        persona_bits.append(f"{state['party_size']}人")
+    if state.get("budget_level"):
+        persona_bits.append(f"预算{state['budget_level']}")
+    persona = " · ".join(persona_bits) or "未指定"
+
+    # 出发地与往返时间（手动输入）：拼成给 LLM 的「往返交通」约束，缺省项省略。
+    origin = (state.get("origin_city") or "").strip()
+    arr = (state.get("arrival_time") or "").strip()
+    dep = (state.get("departure_time") or "").strip()
+    trip_logistics = []
+    if origin:
+        trip_logistics.append(f"出发地：{origin}")
+    if arr:
+        trip_logistics.append(f"第一天预计抵达「{state.get('city', '')}」的时间：{arr}")
+    if dep:
+        trip_logistics.append(f"最后一天返程出发时间：{dep}")
+
     parts = [
         "【行程参数】",
         f"城市：{state.get('city', '')}",
@@ -394,6 +416,13 @@ def _build_synthesis_input(state: TripState) -> str:
         f"住宿偏好：{state.get('hotel_type') or '不限'}",
         f"交通偏好：{'、'.join(state.get('transport') or []) or '不限'}",
         f"额外要求：{state.get('extra') or '无'}",
+        "",
+        "【旅行人群】",
+        persona,
+        "",
+        "【出发地与往返】",
+        ("\n".join(trip_logistics) if trip_logistics
+         else "（用户未填出发地/往返时间，无需生成往返交通段，按整日安排首尾日）"),
         "",
         "【天气数据】",
         str(state.get("weather_data") or "（无）"),
@@ -622,6 +651,33 @@ async def geocode_node(state: TripState) -> dict:
         return {"final_plan": plan} if filled else {}
     except Exception as exc:  # noqa: BLE001 —— best-effort
         logger.warning("geocode_failed", error=str(exc))
+        return {}
+
+
+async def optimize_route_node(state: TripState) -> dict:
+    """几何最近邻路线优化（best-effort）：在 geocode 补完坐标后，按直线距离对每天景点
+    重排并重置 start_time，消除「城东→城西→城东」式来回绕路。
+
+    锁定时段的景点（看日落/夜场等）不参与重排（见 render.optimize_day_route）。
+    纯几何计算、零额外 MCP/LLM 调用；失败只记日志、不影响成稿。
+    多城市以后也天然适用（逐日处理，不关心城市数）。
+    """
+    plan = state.get("final_plan")
+    if not plan or not plan.get("days"):
+        return {}
+    t0 = time.perf_counter()
+    try:
+        from render import optimize_plan_routes
+
+        optimize_plan_routes(plan)  # 原地重排 + 重置 start_time
+        logger.info(
+            "route_optimized",
+            city=plan.get("city"),
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+        )
+        return {"final_plan": plan}
+    except Exception as exc:  # noqa: BLE001 —— best-effort，不触碰 error
+        logger.warning("route_optimize_failed", error=str(exc))
         return {}
 
 

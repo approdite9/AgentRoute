@@ -2,11 +2,12 @@
 LangGraph StateGraph 组装 —— 把各节点连成完整的行程规划流水线。
 
 流程（首轮规划）：
-    START ─(router)→ weather → poi → hotel → route ─┬─(continue)→ review → rag → synthesize → geocode → END
+    START ─(router)→ weather → poi → hotel → route ─┬─(continue)→ review → rag → synthesize → geocode → optimize_route → END
                                                      ├─(retry)───→ poi
                                                      └─(error)───→ error_handler → END
     rag 为 RAG 内容检索节点（best-effort，攻略/口碑增强）；geocode 给缺坐标的景点/酒店
-    补经纬度（best-effort，maps_geo），两者失败都不影响出稿。多轮修改路径 synthesize 后同样过 geocode。
+    补经纬度（best-effort，maps_geo）；optimize_route 做几何最近邻路线优化（best-effort，
+    按直线距离重排每天景点、消除绕路）。三者失败都不影响出稿。多轮修改路径 synthesize 后同样过这两步。
 
 流程（多轮修改，复用同一 thread 的检查点）：
     START ─(router)→ synthesize → END        # 已有成稿 + 修改意见 → 直接重整合，跳过采集
@@ -29,6 +30,7 @@ from agents.nodes import (
     review_node,
     synthesis_node,
     geocode_node,
+    optimize_route_node,
     error_node,
     is_transient_error,
 )
@@ -74,6 +76,7 @@ def build_graph(checkpointer: Any = None) -> Any:
     builder.add_node("review", review_node)
     builder.add_node("synthesize", synthesis_node)
     builder.add_node("geocode", geocode_node)
+    builder.add_node("optimize_route", optimize_route_node)
     builder.add_node("error_handler", error_node)
 
     # Entry: 条件入口 —— 首轮走 weather，多轮修改直达 synthesize。
@@ -95,7 +98,9 @@ def build_graph(checkpointer: Any = None) -> Any:
     builder.add_edge("rag", "synthesize")
     # 整合后补坐标（best-effort）：给缺经纬度的景点/酒店用 maps_geo 补点，地图才能画。
     builder.add_edge("synthesize", "geocode")
-    builder.add_edge("geocode", END)
+    # 补完坐标后做几何最近邻路线优化（best-effort），再结束。
+    builder.add_edge("geocode", "optimize_route")
+    builder.add_edge("optimize_route", END)
     builder.add_edge("error_handler", END)
 
     checkpointer = checkpointer or MemorySaver()

@@ -262,6 +262,127 @@ def test_map_gcj02_corrected_in_china():
     assert pts and abs(pts[0]["lng"] - raw_lng) > 0.001  # 已偏移校正
 
 
+# ---- 按日动线（ui._build_day_geo / _ordered_attractions）----
+
+def test_map_day_geo_sequences_by_start_time():
+    """同一天景点按 start_time 排序并编号（1→2→3），连线坐标随之有序。"""
+    day = {
+        "day_index": 0,
+        "attractions": [
+            {"name": "晚", "start_time": "15:00", "location": {"longitude": 116.42, "latitude": 39.92}},
+            {"name": "早", "start_time": "09:00", "location": {"longitude": 116.40, "latitude": 39.90}},
+            {"name": "中", "start_time": "12:00", "location": {"longitude": 116.41, "latitude": 39.91}},
+        ],
+        "hotel": {"name": "H", "location": {"longitude": 116.43, "latitude": 39.93}},
+    }
+    attractions, path, hotel_pt = ui._build_day_geo(day, 1)
+    # 序号按时间升序：早(1) → 中(2) → 晚(3)
+    assert [a["name"] for a in attractions] == ["早", "中", "晚"]
+    assert [a["seq"] for a in attractions] == ["1", "2", "3"]
+    # 连线为单条 path，按同一顺序串起 3 个坐标
+    assert len(path) == 1 and len(path[0]["path"]) == 3
+    # 酒店独立成点（不进景点序号、不进连线）
+    assert hotel_pt and hotel_pt["name"] == "H"
+
+
+def test_map_day_geo_no_path_for_single_point():
+    """当天只有 1 个有坐标的景点 → 不画连线（path 为空），仍有该点。"""
+    day = {"day_index": 0, "attractions": [
+        {"name": "独点", "location": {"longitude": 116.4, "latitude": 39.9}}]}
+    attractions, path, hotel_pt = ui._build_day_geo(day, 1)
+    assert len(attractions) == 1 and path == [] and hotel_pt is None
+
+
+def test_map_day_geo_untimed_attractions_keep_order():
+    """无 start_time 的景点保持原相对顺序、排在有时间者之后。"""
+    day = {"day_index": 0, "attractions": [
+        {"name": "无序A", "location": {"longitude": 116.40, "latitude": 39.90}},
+        {"name": "有时间", "start_time": "10:00", "location": {"longitude": 116.41, "latitude": 39.91}},
+        {"name": "无序B", "location": {"longitude": 116.42, "latitude": 39.92}},
+    ]}
+    attractions, _, _ = ui._build_day_geo(day, 1)
+    assert [a["name"] for a in attractions] == ["有时间", "无序A", "无序B"]
+
+
+# ---- 路线地理优化（render.optimize_day_route）----
+
+def _hotel(lng, lat):
+    return {"name": "H", "location": {"longitude": lng, "latitude": lat}}
+
+
+def test_route_opt_eliminates_backtracking():
+    """zigzag 顺序(东→西→东) → 最近邻重排为 西→东→东，并重置 start_time 递增。"""
+    from render import optimize_day_route
+    day = {"hotel": _hotel(116.40, 39.90), "attractions": [
+        {"name": "东1", "location": {"longitude": 116.50, "latitude": 39.90}, "visit_duration": 60},
+        {"name": "西", "location": {"longitude": 116.41, "latitude": 39.90}, "visit_duration": 60},
+        {"name": "东2", "location": {"longitude": 116.49, "latitude": 39.90}, "visit_duration": 60},
+    ]}
+    optimize_day_route(day)
+    names = [a["name"] for a in day["attractions"]]
+    assert names == ["西", "东2", "东1"]  # 由近及远，无折返
+    times = [a["start_time"] for a in day["attractions"]]
+    assert times == sorted(times) and all(times)  # start_time 已重置且递增
+
+
+def test_route_opt_keeps_locked_in_its_time_slot():
+    """锁定景点(看日落，输入排在最前)应被放到正确时段(末尾、保留 18:00)，其余排在白天。"""
+    from render import optimize_day_route
+    day = {"hotel": _hotel(116.40, 39.90), "attractions": [
+        {"name": "看日落", "start_time": "18:00", "time_locked": True,
+         "location": {"longitude": 116.60, "latitude": 39.90}, "visit_duration": 90},
+        {"name": "博物馆", "start_time": "09:00",
+         "location": {"longitude": 116.41, "latitude": 39.90}, "visit_duration": 120},
+        {"name": "公园", "start_time": "11:00",
+         "location": {"longitude": 116.45, "latitude": 39.90}, "visit_duration": 90},
+    ]}
+    optimize_day_route(day)
+    assert day["attractions"][-1]["name"] == "看日落"
+    assert day["attractions"][-1]["start_time"] == "18:00"
+    # 其余两个落在日落之前
+    assert all(a["start_time"] < "18:00" for a in day["attractions"][:-1])
+
+
+def test_route_opt_keyword_lock_without_field():
+    """没有 time_locked 字段，但名称含「夜市」→ 关键词识别为锁定，锚到傍晚默认时段。"""
+    from render import optimize_day_route
+    day = {"hotel": _hotel(116.40, 39.90), "attractions": [
+        {"name": "夜市", "location": {"longitude": 116.70, "latitude": 39.90}, "visit_duration": 90},
+        {"name": "A景", "location": {"longitude": 116.41, "latitude": 39.90}, "visit_duration": 60},
+        {"name": "B景", "location": {"longitude": 116.45, "latitude": 39.90}, "visit_duration": 60},
+    ]}
+    optimize_day_route(day)
+    assert day["attractions"][-1]["name"] == "夜市"
+    assert day["attractions"][-1]["start_time"] >= "18:00"
+
+
+def test_route_opt_skips_small_days():
+    """≤2 个景点无需优化，原样不动。"""
+    from render import optimize_day_route
+    day = {"attractions": [
+        {"name": "X", "location": {"longitude": 116.4, "latitude": 39.9}},
+        {"name": "Y", "location": {"longitude": 116.5, "latitude": 39.9}},
+    ]}
+    before = [a["name"] for a in day["attractions"]]
+    optimize_day_route(day)
+    assert [a["name"] for a in day["attractions"]] == before
+
+
+def test_route_opt_coordless_attractions_kept():
+    """无坐标景点不参与最近邻，但仍保留在结果里(排到带坐标序列之后)。"""
+    from render import optimize_day_route
+    day = {"hotel": _hotel(116.40, 39.90), "attractions": [
+        {"name": "无坐标", "visit_duration": 60},
+        {"name": "近", "location": {"longitude": 116.41, "latitude": 39.90}, "visit_duration": 60},
+        {"name": "远", "location": {"longitude": 116.55, "latitude": 39.90}, "visit_duration": 60},
+    ]}
+    optimize_day_route(day)
+    names = [a["name"] for a in day["attractions"]]
+    assert set(names) == {"无坐标", "近", "远"} and len(names) == 3
+    # 带坐标的按由近及远排在前
+    assert names.index("近") < names.index("远")
+
+
 # ============================================================
 # 四、缓存防毒化（nodes._reject_empty / _fetch_poi）
 # ============================================================
