@@ -21,9 +21,11 @@ from monitoring.metrics import CACHE_HITS, CACHE_MISSES
 
 logger = structlog.get_logger(__name__)
 
-TTL_WEATHER = 6 * 3600     # 6 小时 —— 天气短期内基本稳定
-TTL_POI     = 24 * 3600    # 24 小时 —— 景点信息变化慢
-TTL_ROUTE   = 3600         # 1 小时 —— 路况/路线时效性较强
+TTL_WEATHER = 6 * 3600       # 6 小时 —— 天气短期内基本稳定
+TTL_POI     = 24 * 3600      # 24 小时 —— 景点信息变化慢
+TTL_HOTEL   = 24 * 3600      # 24 小时 —— 酒店列表变化慢
+TTL_ROUTE   = 3600           # 1 小时 —— 路况/路线时效性较强
+TTL_GEO     = 30 * 24 * 3600 # 30 天 —— 地点经纬度基本不变
 
 # 记录「最近一次被 @cached 包裹的调用是否命中缓存」，供节点层打 cache_hit 日志。
 # ContextVar：节点是「直接 await」缓存函数（无 Task 边界），同一 context 内的 set
