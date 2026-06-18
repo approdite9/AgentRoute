@@ -20,8 +20,20 @@ from sqlalchemy.pool import NullPool
 
 from config import settings
 
+
+def _require_db_url() -> str:
+    url = settings.database_url
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL is not set. "
+            "Add it in Railway Dashboard > AgentRoute > Variables."
+        )
+    return url
+
+
 # FastAPI 进程内共享的带池引擎（单一长驻事件循环）。
-engine = create_async_engine(settings.database_url, pool_size=10, max_overflow=20)
+# 懒加载：导入时不建连接，首次调用 get_db() 时才创建，避免缺 URL 时启动即崩。
+engine = create_async_engine(_require_db_url(), pool_size=10, max_overflow=20)
 AsyncSessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
