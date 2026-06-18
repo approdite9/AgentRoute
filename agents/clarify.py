@@ -14,11 +14,17 @@ from schemas import ClarifyingQuestions
 # 已由表单显式收集、无需再问的字段（拼成给 LLM 的「已知信息」）。
 _FIELD_LABELS = [
     ("city", "目的地"),
+    ("origin_city", "出发地"),
     ("start_date", "开始日期"),
     ("end_date", "结束日期"),
+    ("arrival_time", "抵达时间"),
+    ("departure_time", "返程时间"),
     ("preferences", "已选偏好"),
     ("hotel_type", "住宿偏好"),
     ("transport", "交通偏好"),
+    ("party_type", "同伴类型"),
+    ("party_size", "出行人数"),
+    ("budget_level", "预算档位"),
     ("extra", "额外要求"),
 ]
 

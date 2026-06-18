@@ -39,7 +39,19 @@ class TripRequest(BaseModel):
     hotel_type: str = ""
     transport: list[str] = Field(default_factory=list)
     extra: str = ""
+    # 旅行人群画像（影响景点/酒店/餐厅与节奏推荐）。
+    party_type: str = ""
+    party_size: int = 0
+    budget_level: str = ""
+    # 出发地与往返时间（手动输入，无票务 API）：驱动往返交通段 + 首尾日半天截断。
+    origin_city: str = ""
+    arrival_time: str = ""
+    departure_time: str = ""
     user_id: str | None = None
+    # 多轮修改：带上一版成稿（prev_plan）+ 修改要求（feedback）时，图入口直达
+    # synthesize，跳过 weather/poi/hotel/route 的重复采集，只在原计划上做最小修改。
+    prev_plan: dict | None = None
+    feedback: str = ""
 
 
 # Celery 任务状态 → 对外统一状态词。
@@ -56,7 +68,7 @@ _STATUS_MAP = {
 
 def _build_initial_state(req: TripRequest) -> dict:
     """把请求体转成 LangGraph 图的初始 state_dict。"""
-    return {
+    state: dict = {
         "city": req.city,
         "start_date": req.start_date,
         "end_date": req.end_date,
@@ -64,9 +76,21 @@ def _build_initial_state(req: TripRequest) -> dict:
         "hotel_type": req.hotel_type,
         "transport": req.transport,
         "extra": req.extra,
+        "party_type": req.party_type,
+        "party_size": req.party_size,
+        "budget_level": req.budget_level,
+        "origin_city": req.origin_city,
+        "arrival_time": req.arrival_time,
+        "departure_time": req.departure_time,
         "messages": [],
         "retry_count": 0,
     }
+    # 多轮修改：同时带来上一版计划与修改要求 → 注入 final_plan + user_feedback，
+    # 触发 entry_router 直达 synthesize 的「最小修改」路径（省去重复采集的 token）。
+    if req.prev_plan and req.feedback.strip():
+        state["final_plan"] = req.prev_plan
+        state["user_feedback"] = req.feedback.strip()
+    return state
 
 
 @router.post("/trips")
@@ -89,6 +113,12 @@ async def create_trip(req: TripRequest, db: AsyncSession = Depends(get_db)) -> d
             "hotel_type": req.hotel_type,
             "transport": req.transport,
             "extra": req.extra,
+            "party_type": req.party_type,
+            "party_size": req.party_size,
+            "budget_level": req.budget_level,
+            "origin_city": req.origin_city,
+            "arrival_time": req.arrival_time,
+            "departure_time": req.departure_time,
         },
         status="pending",
     )

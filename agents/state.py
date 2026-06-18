@@ -14,6 +14,20 @@ class TripState(TypedDict):
     hotel_type: str
     transport: list[str]
     extra: str
+    # 出发地与往返时间（手动输入，无票务 API）：
+    #   origin_city    —— 用户常驻/出发城市；用于生成往返交通段（空则不生成）
+    #   arrival_time   —— 第一天预计抵达目的地的时间（HH:MM）；驱动首日「半天」截断
+    #   departure_time —— 最后一天返程出发时间（HH:MM）；驱动末日「半天」截断
+    origin_city: str
+    arrival_time: str
+    departure_time: str
+    # 旅行人群画像：直接影响景点/酒店/餐厅与节奏的推荐逻辑。
+    #   party_type  —— 同伴类型（独自一人 / 情侣出行 / 家庭亲子 / 朋友结伴 / 商务出行）
+    #   party_size  —— 出行人数（0 表示未填）
+    #   budget_level—— 预算档位（经济实惠 / 舒适适中 / 高端奢华）
+    party_type: str
+    party_size: int
+    budget_level: str
 
     # Conversation history
     messages: Annotated[list, add_messages]

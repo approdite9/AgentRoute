@@ -11,7 +11,7 @@ docker-compose 里覆盖为 http://api:8000）。
 import hmac
 import json
 import os
-from datetime import date
+from datetime import date, time
 
 import httpx
 import streamlit as st
@@ -286,6 +286,12 @@ def build_request(
     hotel_type: str,
     preferences: list[str],
     extra: str,
+    party_type: str = "",
+    party_size: int = 0,
+    budget_level: str = "",
+    origin_city: str = "",
+    arrival_time: str = "",
+    departure_time: str = "",
 ) -> dict:
     """把表单参数转成 POST /api/v1/trips 的请求体（字段与 api.TripRequest 对齐）。"""
     return {
@@ -296,6 +302,12 @@ def build_request(
         "hotel_type": hotel_type,
         "transport": transport,
         "extra": extra.strip(),
+        "party_type": party_type,
+        "party_size": party_size,
+        "budget_level": budget_level,
+        "origin_city": origin_city.strip(),
+        "arrival_time": arrival_time,
+        "departure_time": departure_time,
         "user_id": get_user_id(),
     }
 
@@ -449,6 +461,27 @@ with st.sidebar:
         st.error("结束日期不能早于开始日期")
 
     st.markdown("---")
+    st.markdown("### ✈️ 出发地与往返")
+    origin_city = st.text_input(
+        "📍 出发城市",
+        placeholder="例如: 上海（填了才生成往返交通与半天逻辑）",
+    )
+    know_times = st.checkbox(
+        "✅ 我已知道往返时间",
+        value=False,
+        help="勾选后填写抵达/返程时间；行程会据此安排首尾日的「半天」，更贴近真实体验。",
+    )
+    arrival_time = departure_time = ""
+    if know_times:
+        ac1, ac2 = st.columns(2)
+        with ac1:
+            at = st.time_input("🛬 抵达时间", value=time(14, 0), step=1800)
+            arrival_time = at.strftime("%H:%M")
+        with ac2:
+            dt = st.time_input("🛫 返程出发", value=time(11, 0), step=1800)
+            departure_time = dt.strftime("%H:%M")
+
+    st.markdown("---")
     st.markdown("### 🚗 交通方式")
     transport_options = ["公共交通", "自驾", "打车/网约车", "骑行", "步行"]
     transport_selected = [opt for opt in transport_options if st.checkbox(opt, key=f"trans_{opt}")]
@@ -463,6 +496,25 @@ with st.sidebar:
     )
     if hotel_type == "不限":
         hotel_type = ""
+
+    st.markdown("---")
+    st.markdown("### 👥 旅行人群")
+    party_type = st.selectbox(
+        "同伴类型",
+        ["不限", "独自一人", "情侣出行", "家庭亲子", "朋友结伴", "商务出行"],
+        index=0,
+    )
+    if party_type == "不限":
+        party_type = ""
+    party_size = st.number_input("出行人数", min_value=0, max_value=30, value=0, step=1,
+                                 help="0 表示不指定；会影响餐饮/门票费用估算。")
+    budget_level = st.select_slider(
+        "预算档位",
+        options=["不限", "经济实惠", "舒适适中", "高端奢华"],
+        value="不限",
+    )
+    if budget_level == "不限":
+        budget_level = ""
 
     st.markdown("---")
     st.markdown("### 🎯 旅行偏好")
@@ -539,6 +591,8 @@ if submit_btn:
         req = build_request(
             city, start_date, end_date,
             transport_selected, hotel_type, pref_selected, extra_requirements,
+            party_type, int(party_size), budget_level,
+            origin_city, arrival_time, departure_time,
         )
         if clarify_on:
             with st.spinner("🤔 正在想要问你哪些问题…"):
@@ -591,20 +645,25 @@ plan = st.session_state.plan_data
 if plan is not None:
     ui.render_plan_result(plan)
 
-    # ---- 调整并重新规划（瘦客户端：带上修改意见重新发起一次完整规划）----
+    # ---- 调整并微调（多轮修改：带上原计划 + 修改意见，直达整合做「最小必要修改」）----
     st.markdown("---")
-    st.markdown("### 🔄 调整并重新规划")
-    st.caption("带上你的修改意见重新发起一次规划（会生成一条新的行程记录）。")
+    st.markdown("### 🔄 调整并微调")
+    st.caption(
+        "在当前行程上做局部调整：仅改动你指出的部分，其余尽量保留。"
+        "比直接重规划更快、更省（跳过重复的天气/景点/酒店/路线采集）。"
+    )
     modification = st.text_input(
         "修改要求",
         key="modify_input",
-        placeholder="例如：多安排户外景点、酒店换到市中心、行程节奏放慢些",
+        placeholder="例如：第2天换成室内景点、酒店换到市中心、行程节奏放慢些",
     )
-    if st.button("应用修改并重规划", use_container_width=True) and modification.strip():
+    if st.button("应用修改", type="primary", use_container_width=True) and modification.strip():
         base = st.session_state.last_request
         if not base:
             st.error("没有可复用的上次请求，请直接在左侧重新规划。")
         else:
+            # 带上一版成稿 + 修改要求：后端据此走 entry_router → synthesize 的最小修改路径。
             new_req = dict(base)
-            new_req["extra"] = f"{base.get('extra', '')} {modification.strip()}".strip()
-            run_and_store(new_req, "🧩 正在按你的要求重新规划...")
+            new_req["prev_plan"] = plan
+            new_req["feedback"] = modification.strip()
+            run_and_store(new_req, "🧩 正在按你的要求微调当前行程…")
