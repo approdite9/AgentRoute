@@ -22,6 +22,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(_ROOT)
 
 from celery import Celery
+from kombu import Queue
 
 from config import settings
 from logging_config import configure_logging
@@ -45,10 +46,23 @@ celery_app.conf.update(
     task_time_limit=660,              # 11 min 硬超时（SIGKILL）
     task_soft_time_limit=600,         # 10 min 软超时（抛 SoftTimeLimitExceeded）
     result_expires=3600,             # 结果在 backend 中保留 1h
-    # 不做自定义队列路由：本项目只有 plan_trip 一个 Celery 任务（weather/poi 等是
-    # LangGraph 图内节点，并非独立 Celery 任务）。此前把任务路由到 trip.planning，
-    # 一旦 worker 启动命令漏了 `-Q trip.planning` 就永远取不到任务、前端卡在「开始规划」。
-    # 改走默认队列（celery），任何 `celery -A tasks.celery_app worker` 都能消费，杜绝该坑。
+    # ---- 队列拓扑（显式声明，便于横向扩容：可为 weather/poi 起专用 worker 分流）----
+    task_queues=(
+        Queue("trip.planning"),
+        Queue("trip.weather"),
+        Queue("trip.poi"),
+    ),
+    # 任务路由：主任务 plan_trip → trip.planning；weather/poi 队列预留给未来的子任务分流。
+    task_routes={
+        "tasks.trip_tasks.plan_trip": {"queue": "trip.planning"},
+        "tasks.trip_tasks.fetch_weather": {"queue": "trip.weather"},
+        "tasks.trip_tasks.fetch_poi": {"queue": "trip.poi"},
+    },
+    # Fail-safe 默认队列 = trip.planning：核心规划任务即默认队列，使「未显式 -Q」启动的
+    # worker 也能消费到它，避免漏配 -Q 时任务无人消费、前端永久卡在「开始规划」。
+    # 规范启动命令仍应显式消费三个队列（生产部署照此配置）：
+    #   celery -A tasks.celery_app worker -Q trip.planning,trip.weather,trip.poi --concurrency=2 --loglevel=info
+    task_default_queue="trip.planning",
 )
 
 # 确保 worker 启动时任务模块被导入并注册到该 app。
