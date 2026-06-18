@@ -50,6 +50,10 @@ def _demo_check(token: str) -> dict:
             json={"token": token},
             timeout=10.0,
         )
+        # 429 ≠ 后端故障：是 IP 限流（短时操作过多）。单独区分，给出准确提示，
+        # 而不是误报「无法连接验证服务」。
+        if resp.status_code == 429:
+            return {"valid": False, "can_use": False, "reason": "rate_limited", "name": ""}
         resp.raise_for_status()
         return resp.json()
     except Exception:
@@ -117,16 +121,25 @@ def render_registration_gate() -> bool:
 
     # --- 已有 token：检查配额 ---
     if token:
+        # 本会话已验证过同一 token → 直接放行，**不再每次 rerun 都打 /demo/check**。
+        # 否则用户每勾一个选项（Streamlit 都会 rerun）就调一次校验接口，几下就撞上
+        # IP 限流（429）→ 误弹「无法连接验证服务」。配额仍准确：每次成功规划后会在
+        # run_and_store 里清除该标记，强制下一次 rerun 重新校验，配额耗尽即拦截。
+        if st.session_state.get("demo_validated") and st.session_state.get("demo_token") == token:
+            return True
         info = _demo_check(token)
         if info.get("can_use"):
             # 把用户名存进 session，后续规划时一起写库
             st.session_state.setdefault("demo_user_name", info.get("name", ""))
             st.session_state["demo_token"] = token
+            st.session_state["demo_validated"] = True
             return True
-        # 配额用完、封禁或后端故障
+        # 配额用完、封禁、限流或后端故障
         reason = info.get("reason", "")
         name = info.get("name", "用户")
-        if reason == "backend_error":
+        if reason == "rate_limited":
+            st.error("⚠️ 操作过于频繁，请等几秒后刷新重试。")
+        elif reason == "backend_error":
             st.error("⚠️ 无法连接验证服务，请稍后刷新重试。")
         elif reason == "blocked":
             st.error(f"😔 {name}，你的账号已被封禁，如有疑问请联系管理员。")
@@ -377,10 +390,12 @@ def run_and_store(req: dict, label: str) -> None:
     elif not plan:
         st.error("😟 未获取到行程，请稍后重试或调整参数。")
     else:
-        # 规划成功：消耗一次演示配额
+        # 规划成功：消耗一次演示配额，并清除会话验证缓存——
+        # 下一次 rerun 会重新校验配额，用完即拦截（保证缓存不绕过配额）。
         token = st.session_state.get("demo_token", "")
         if token:
             _demo_use(token)
+            st.session_state["demo_validated"] = False
         st.session_state.plan_data = plan
         st.session_state.phase = "input"  # 退出追问阶段，回到展示
         st.rerun()

@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     langchain_tracing_v2: bool = True
     langchain_project: str = "travel-agent-v1"
     langchain_api_key: str = ""
-    rate_limit_per_minute: int = 10
+    rate_limit_per_minute: int = 60
     sentry_dsn: str = ""
 
     # Streamlit UI 通过该地址访问 FastAPI（提交规划 → SSE 流式 → 渲染）。
