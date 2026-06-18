@@ -128,27 +128,36 @@ def render_registration_gate() -> bool:
         if st.session_state.get("demo_validated") and st.session_state.get("demo_token") == token:
             return True
         info = _demo_check(token)
+        reason = info.get("reason", "")
+        name = info.get("name", "用户")
         if info.get("can_use"):
             # 把用户名存进 session，后续规划时一起写库
             st.session_state.setdefault("demo_user_name", info.get("name", ""))
             st.session_state["demo_token"] = token
             st.session_state["demo_validated"] = True
+            st.session_state["quota_exhausted"] = False
             return True
-        # 配额用完、封禁、限流或后端故障
-        reason = info.get("reason", "")
-        name = info.get("name", "用户")
-        if reason == "rate_limited":
-            st.error("⚠️ 操作过于频繁，请等几秒后刷新重试。")
-        elif reason == "backend_error":
-            st.error("⚠️ 无法连接验证服务，请稍后刷新重试。")
-        elif reason == "blocked":
+        # 配额耗尽：**仍放行页面**，让用户能看到刚生成的行程；只标记配额耗尽，
+        # 由 run_and_store 在「发起新规划」时拦截。避免一刀切 st.stop() 把结果也挡掉。
+        if reason == "quota_exhausted":
+            st.session_state["demo_token"] = token
+            st.session_state.setdefault("demo_user_name", name)
+            st.session_state["demo_validated"] = True       # 已确认有效，避免每次 rerun 重打校验
+            st.session_state["quota_exhausted"] = True
+            return True
+        # 封禁 / 限流 / 后端故障：真正拦截整页（fail-closed）。
+        if reason == "blocked":
             st.error(f"😔 {name}，你的账号已被封禁，如有疑问请联系管理员。")
-        else:
-            st.warning(
-                f"👋 {name}，你的免费试用次数已用完。\n\n"
-                "如需继续使用，请联系管理员审批：barrninerichard@gmail.com"
+            st.stop()
+        if reason in ("rate_limited", "backend_error"):
+            st.error(
+                "⚠️ 操作过于频繁，请等几秒后刷新重试。" if reason == "rate_limited"
+                else "⚠️ 无法连接验证服务，请稍后刷新重试。"
             )
-        st.stop()
+            st.stop()
+        # token 失效（token_invalid 等）：清掉坏 token，落到下方注册表单重新注册。
+        st.session_state.pop("demo_token", None)
+        st.session_state.pop("demo_validated", None)
 
     # --- 无 token：显示注册表单 ---
     st.markdown("## 👋 欢迎使用智能旅行助手（演示版）")
@@ -378,6 +387,13 @@ def plan_via_api(req: dict, status) -> tuple[dict | None, str | None]:
 
 def run_and_store(req: dict, label: str) -> None:
     """跑一次规划，成功则写入 session 并 rerun 渲染；失败则就地报错。"""
+    # 配额耗尽：拦截「发起新规划」（但不影响查看已生成的行程）。
+    if st.session_state.get("quota_exhausted"):
+        st.warning(
+            "👋 你的免费试用次数已用完，无法发起新的规划；已生成的行程仍可查看。\n\n"
+            "如需继续使用，请联系管理员审批：barrninerichard@gmail.com"
+        )
+        return
     st.session_state.last_request = req
     with st.status(label, expanded=True) as status:
         plan, error = plan_via_api(req, status)
@@ -456,6 +472,13 @@ render_admin_panel()
 
 # ---- 主 UI ----
 st.markdown('<div class="main-header">🧳 智能旅行助手</div>', unsafe_allow_html=True)
+
+# 配额耗尽提示：放在顶部、不打断结果展示——用户既能看到已生成的行程，也明白为何无法再发起。
+if st.session_state.get("quota_exhausted"):
+    st.info(
+        "ℹ️ 你的免费试用次数已用完，**已生成的行程仍可在下方查看与导出**；"
+        "如需继续规划，请联系管理员审批：barrninerichard@gmail.com"
+    )
 
 # ============ 侧边栏: 参数输入 ============
 with st.sidebar:
