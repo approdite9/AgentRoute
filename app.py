@@ -19,7 +19,9 @@ import ui
 
 API_BASE = os.environ.get("API_BASE_URL", "http://localhost:8000").rstrip("/")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
-USER_ID = "streamlit"  # 标记 UI 提交，便于在 /trips/history 里按用户过滤
+def get_user_id() -> str:
+    """用 demo token 作为 user_id，让每个用户只看到自己的历史记录。"""
+    return st.session_state.get("demo_token") or "anonymous"
 
 
 # ============================================================
@@ -290,7 +292,7 @@ def build_request(
         "hotel_type": hotel_type,
         "transport": transport,
         "extra": extra.strip(),
-        "user_id": USER_ID,
+        "user_id": get_user_id(),
     }
 
 
@@ -477,7 +479,7 @@ with st.sidebar:
     # 历史记录（读自 Postgres，经 API；证明 UI 提交确实落库）。
     st.markdown("---")
     with st.expander("🕘 历史记录", expanded=False):
-        history = fetch_history(USER_ID)
+        history = fetch_history(get_user_id())
         if history is None:
             st.caption("（无法连接后端 API）")
         elif not history:
