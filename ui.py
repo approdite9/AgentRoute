@@ -19,6 +19,7 @@ from render import (
     gcj02_to_wgs84,
     build_day_timeline,
     build_ical,
+    split_suggestions,
 )
 
 
@@ -389,14 +390,13 @@ def _render_budget(budget: dict) -> None:
 # ==================== 建议 ====================
 
 def _render_suggestions(suggestions: str) -> None:
-    if not suggestions:
+    tips = split_suggestions(suggestions)
+    if not tips:
         return
     st.markdown("---")
     st.markdown("##### 💡 旅行建议")
-    for tip in suggestions.replace("；", ";").split(";"):
-        tip = tip.strip()
-        if tip:
-            st.markdown(f"- {tip}")
+    # 一次性拼成一个有序列表渲染：条目已剥掉原有序号，避免「• 1. …」双重标记。
+    st.markdown("\n".join(f"{i}. {tip}" for i, tip in enumerate(tips, 1)))
 
 
 # ==================== 导出 ====================
@@ -464,13 +464,11 @@ def build_markdown(p: dict) -> str:
         md += f"| 交通出行 | ¥{b.get('total_transportation', 0):,} |\n"
         md += f"| **总计** | **¥{b.get('total', 0):,}** |\n"
 
-    sug = p.get("overall_suggestions", "")
-    if sug:
+    tips = split_suggestions(p.get("overall_suggestions", ""))
+    if tips:
         md += "\n## 💡 旅行建议\n\n"
-        for tip in sug.replace("；", ";").split(";"):
-            tip = tip.strip()
-            if tip:
-                md += f"- {tip}\n"
+        for i, tip in enumerate(tips, 1):
+            md += f"{i}. {tip}\n"
     return md
 
 

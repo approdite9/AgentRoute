@@ -591,3 +591,25 @@ async def test_graph_rag_failure_is_non_fatal(_flush_cache, sample_state, monkey
         _fresh(sample_state, city=f"城市-{uuid.uuid4()}"), config=_cfg())
     assert final.get("final_plan") is not None      # RAG 挂了也出稿
     assert final.get("error") is None
+
+
+# ---- 总体建议拆分（render.split_suggestions）----
+
+def test_split_suggestions_strips_existing_numbering():
+    """自带「1. 2. 3.」编号 + 换行的建议 → 拆成干净条目，去掉原序号（避免双重标记）。"""
+    from render import split_suggestions
+    text = "1. 白塔山日落最佳\n2. 手抓羊肉解腻\n3. 紫外线强备墨镜"
+    assert split_suggestions(text) == ["白塔山日落最佳", "手抓羊肉解腻", "紫外线强备墨镜"]
+
+
+def test_split_suggestions_mixed_separators_and_bullets():
+    """兼容 ；/; 分隔，并剥掉 • / - 等项目符号。"""
+    from render import split_suggestions
+    assert split_suggestions("防晒；带泳衣；• 海鲜适量；- 提前预约") == \
+        ["防晒", "带泳衣", "海鲜适量", "提前预约"]
+
+
+def test_split_suggestions_empty():
+    from render import split_suggestions
+    assert split_suggestions("") == []
+    assert split_suggestions(None) == []

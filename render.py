@@ -1,4 +1,5 @@
 """渲染工具 —— JSON 解析、CLI 格式化、Streamlit 组件。"""
+import re
 
 
 def parse_plan(text: str | dict) -> dict | None:
@@ -348,6 +349,27 @@ def build_ical(plan: dict) -> str:
 
 # ==================== 共享小工具 ====================
 
+# 行首已有的序号 / 项目符号：1. / 1、/ 1) / - / • / · / *（渲染前剥掉，避免双重标记）。
+_SUGG_LEAD_RE = re.compile(r"^\s*(?:\d+\s*[.、)]\s*|[-•·*]\s+)")
+
+
+def split_suggestions(text: str) -> list[str]:
+    """把「总体建议」文本拆成干净条目。
+
+    兼容三种分隔：中文分号 ；/ 英文分号 ; / 换行；并去掉每条开头**已有的**序号或
+    项目符号（如 "1. " "1、" "- " "• "），避免渲染层再加 "- " 后出现「• 1. ...」
+    这种双重标记、以及编号被 markdown 当成有序列表导致的错乱。
+    """
+    if not text:
+        return []
+    items: list[str] = []
+    for piece in re.split(r"[;；\n]+", text):
+        piece = _SUGG_LEAD_RE.sub("", piece.strip())
+        if piece:
+            items.append(piece)
+    return items
+
+
 def hotel_price_label(hotel: dict) -> str:
     """酒店价格展示：优先价格区间（price_range），无则退回单价 estimated_cost/晚。"""
     price_range = hotel.get("price_range")
@@ -541,10 +563,8 @@ def format_plan_cli(json_text: str) -> str | None:
     if suggestions:
         lines.append("")
         lines.append("💡 旅行建议")
-        for tip in suggestions.replace("；", ";").split(";"):
-            tip = tip.strip()
-            if tip:
-                lines.append(f"   {tip}")
+        for i, tip in enumerate(split_suggestions(suggestions), 1):
+            lines.append(f"   {i}. {tip}")
 
     lines.append("")
     return "\n".join(lines)
