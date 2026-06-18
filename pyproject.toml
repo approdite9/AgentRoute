@@ -19,6 +19,8 @@ dependencies = [
     "sentry-sdk[fastapi]",
     "langgraph",
     "langgraph-checkpoint-redis",
+    "langgraph-checkpoint-postgres",
+    "psycopg[binary,pool]",
     "langsmith",
     "langchain",
     "langchain-community",

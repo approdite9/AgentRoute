@@ -107,6 +107,17 @@ class Settings(BaseSettings):
                 return v.replace("postgresql://", "postgresql+asyncpg://", 1)
         return v
 
+    def checkpoint_db_url(self) -> str:
+        """LangGraph AsyncPostgresSaver 用的连接串（psycopg 格式，去掉 +asyncpg 驱动后缀）。
+
+        复用业务库即可（检查点表与业务表共存于同一 Postgres）；未配置 DATABASE_URL 时
+        返回空串，调用方据此降级为内存检查点。
+        """
+        url = self.database_url
+        if not url:
+            return ""
+        return url.replace("postgresql+asyncpg://", "postgresql://", 1)
+
     @property
     def api_key(self) -> str:
         """MCP 鉴权所用 API Key（与 DashScope 相同）。"""
