@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 from pathlib import Path
 
 from rag.bm25 import BM25Index

@@ -38,10 +38,10 @@ _DATE_PATTERNS = [
 _CITY_PATTERN = re.compile(r"^\s*(.+?)\s*\d*\s*日游")
 # 各结构化字段（来自 app.build_prompt 的固定格式），均匹配到下一个分隔符为止
 _SEP = r"[，,。；;\n]"
-_PREF_PATTERN = re.compile(rf"喜欢\s*([^，,。；;\n]+)")
-_HOTEL_PATTERN = re.compile(rf"住宿偏好\s*([^，,。；;\n]+)")
-_TRANSPORT_PATTERN = re.compile(rf"交通方式偏好\s*([^，,。；;\n]+)")
-_EXTRA_PATTERN = re.compile(rf"额外要求\s*[:：]\s*([^，,。；;\n]+)")
+_PREF_PATTERN = re.compile(r"喜欢\s*([^，,。；;\n]+)")
+_HOTEL_PATTERN = re.compile(r"住宿偏好\s*([^，,。；;\n]+)")
+_TRANSPORT_PATTERN = re.compile(r"交通方式偏好\s*([^，,。；;\n]+)")
+_EXTRA_PATTERN = re.compile(r"额外要求\s*[:：]\s*([^，,。；;\n]+)")
 
 # 偏好/交通的分隔符（顿号、逗号、和、与、空格）
 _LIST_SPLIT = re.compile(r"[、,，和与\s]+")

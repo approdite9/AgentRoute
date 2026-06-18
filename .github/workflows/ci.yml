@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # 单测需要 Redis（缓存 db2 / 限流 db4 / 隔离 db15）；不需要真实大模型与 Postgres
+    # （LLM/MCP 全程 mock；DB 用假会话 / 检查点降级 MemorySaver）。
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install dependencies
+        # pyproject 的 build-backend 不可直接 `pip install .`（与 Dockerfile 同因），
+        # 故按依赖清单安装：抽出 [project].dependencies + optional.test 再装。
+        run: |
+          python -m pip install --upgrade pip
+          python - <<'PY'
+          import tomllib
+          d = tomllib.load(open("pyproject.toml", "rb"))
+          deps = d["project"]["dependencies"] + d["project"]["optional-dependencies"]["test"]
+          open("requirements-ci.txt", "w").write("\n".join(deps))
+          PY
+          pip install -r requirements-ci.txt
+          pip install ruff
+
+      - name: Lint (ruff · pyflakes)
+        run: ruff check . --select F
+
+      - name: Run tests
+        env:
+          REDIS_URL: redis://localhost:6379
+          DATABASE_URL: ""
+          LANGCHAIN_TRACING_V2: "false"
+        run: pytest -q

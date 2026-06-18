@@ -22,7 +22,6 @@ st.markdown(
 )
 
 from tests.eval.evaluator import build_sample_plan
-from render import _weather_icon
 import ui
 
 # ---- 合成 7 天打车行程 ----

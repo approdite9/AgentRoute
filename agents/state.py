@@ -1,7 +1,7 @@
 """
 LangGraph 共享状态定义 —— 整条行程规划流水线在节点之间传递的 TripState。
 """
-from typing import TypedDict, Annotated, Any
+from typing import TypedDict, Annotated
 from langgraph.graph.message import add_messages
 
 

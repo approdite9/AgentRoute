@@ -7,7 +7,6 @@ import time
 
 import pytest
 
-import sandbox
 import skills
 from sandbox import SandboxError, SandboxLimits, SandboxTimeout, run_in_sandbox, sandboxed
 

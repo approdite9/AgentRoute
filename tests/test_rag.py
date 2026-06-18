@@ -3,10 +3,9 @@
 覆盖：分词 · 切片(重叠/元数据) · 结构化过滤 · 向量库 · BM25 · RRF 融合 · 多链路召回 ·
 重排(含失败回退) · 问题重写(含离线兜底) · 端到端检索 · RAG 评估指标。
 """
-import pytest
 
 from rag.tokenize import tokenize
-from rag.chunk import Chunk, chunk_text, chunk_documents, meta_match
+from rag.chunk import Chunk, chunk_documents, meta_match
 from rag.embeddings import HashingEmbedder
 from rag.bm25 import BM25Index
 from rag.store import NumpyVectorStore

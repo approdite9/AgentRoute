@@ -50,3 +50,14 @@ test = [
 # 从而把 tests/conftest.py 当作初始 conftest —— 其中的 pytest_plugins=["anyio"] 才合法。
 testpaths = ["tests"]
 addopts = "-ra"
+
+[tool.ruff]
+target-version = "py313"
+# 迁移脚本/一次性产物不纳入门禁。
+extend-exclude = ["db/migrations"]
+
+[tool.ruff.lint]
+# CI 门禁只跑 pyflakes（F）：抓未用导入、未定义名、重复定义等**真实问题**。
+# E402（import 不在顶部）/ E702（分号）是本项目刻意为之（日志与 sys.path 装载次序、
+# 测试里的紧凑写法），不作为门禁，避免噪音。
+select = ["F"]
