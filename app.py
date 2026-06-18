@@ -339,20 +339,24 @@ def plan_via_api(req: dict, status) -> tuple[dict | None, str | None]:
 
     status: st.status 容器，用于把工具进度逐条写出来。
     """
+    # 鉴权：写接口需带令牌（后端要求），统一用 x-demo-token 头。
+    token = st.session_state.get("demo_token", "")
+    auth_headers = {"x-demo-token": token} if token else {}
     try:
         # read 超时给足：规划可能 60-90s；SSE 每秒有 keepalive 注释帧，不会空闲超时。
         with httpx.Client(timeout=httpx.Timeout(15.0, read=180.0)) as client:
-            resp = client.post(f"{API_BASE}/api/v1/trips", json=req)
+            resp = client.post(f"{API_BASE}/api/v1/trips", json=req, headers=auth_headers)
             if resp.status_code == 429:
                 return None, "请求过于频繁（已触发限流），请稍后再试。"
+            if resp.status_code in (401, 403):
+                return None, "登录状态已失效，请刷新页面重新进入。"
             resp.raise_for_status()
             task_id = resp.json()["task_id"]
             status.write(f"已提交，任务号 `{task_id}`，开始规划…")
 
             plan: dict | None = None
             error: str | None = None
-            token = st.session_state.get("demo_token", "")
-            stream_headers = {"x-demo-token": token} if token else {}
+            stream_headers = auth_headers
             with client.stream("GET", f"{API_BASE}/api/v1/trips/{task_id}/stream", headers=stream_headers) as r:
                 r.raise_for_status()
                 for line in r.iter_lines():
@@ -419,9 +423,11 @@ def run_and_store(req: dict, label: str) -> None:
 
 def fetch_clarify(req: dict) -> list[dict]:
     """向 /trips/clarify 拉取澄清问题；失败/超时则返回空（直接进入规划）。"""
+    token = st.session_state.get("demo_token", "")
+    headers = {"x-demo-token": token} if token else {}
     try:
         with httpx.Client(timeout=httpx.Timeout(10.0, read=40.0)) as client:
-            resp = client.post(f"{API_BASE}/api/v1/trips/clarify", json=req)
+            resp = client.post(f"{API_BASE}/api/v1/trips/clarify", json=req, headers=headers)
             resp.raise_for_status()
             return resp.json().get("questions") or []
     except Exception:  # noqa: BLE001 —— 追问失败不阻塞主流程

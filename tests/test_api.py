@@ -18,9 +18,17 @@ from config import settings
 import api.routers.trips as trips_mod
 import api.routers.health as health_mod
 from api.main import app
+from api.auth import get_current_user
 from db.session import get_db
 
 pytestmark = pytest.mark.anyio
+
+
+class _FakeUser:
+    """假 DemoUser：写接口鉴权依赖返回它即可（user.token 作为归属/隔离键）。"""
+    token = "test-token"
+    name = "Tester"
+    is_blocked = False
 
 
 class _FakeSession:
@@ -37,6 +45,10 @@ async def _override_get_db():
     yield _FakeSession()
 
 
+async def _override_get_current_user():
+    return _FakeUser()
+
+
 @pytest.fixture(autouse=True)
 async def _reset_ratelimit():
     """每个用例前清空限流计数（db 4），避免上一个用例的请求把窗口计数带进来。"""
@@ -49,7 +61,19 @@ async def _reset_ratelimit():
 
 @pytest.fixture
 async def client():
-    """绑定到 app 的异步 HTTP 客户端；DB 依赖被替换为假会话。"""
+    """已鉴权的异步客户端：DB 用假会话，鉴权依赖被 override 为假用户。"""
+    app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[get_current_user] = _override_get_current_user
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+    app.dependency_overrides.pop(get_db, None)
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture
+async def anon_client():
+    """未鉴权客户端（不 override get_current_user）：用于验证鉴权拦截（401）。"""
     app.dependency_overrides[get_db] = _override_get_db
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -126,15 +150,45 @@ async def test_clarify_graceful_on_error(client):
     assert resp.json()["questions"] == []
 
 
-async def test_trip_detail_requires_token(client):
-    """历史详情端点未带 demo token → 401（鉴权在任何 DB 访问之前）。"""
-    import uuid as _uuid
-    resp = await client.get(f"/api/v1/trips/history/{_uuid.uuid4()}")
+async def test_create_trip_requires_auth(anon_client):
+    """未鉴权 POST /trips → 401（堵住匿名刷配额/账单的洞）。"""
+    resp = await anon_client.post("/api/v1/trips", json={"city": "北京"})
     assert resp.status_code == 401
 
 
-async def test_trip_history_requires_no_token_returns_empty(client):
-    """历史列表未带 token → 返回空列表（不报错）。"""
-    resp = await client.get("/api/v1/trips/history")
-    assert resp.status_code == 200
-    assert resp.json() == []
+async def test_clarify_requires_auth(anon_client):
+    """未鉴权 POST /trips/clarify → 401（LLM 调用须防匿名滥用）。"""
+    resp = await anon_client.post("/api/v1/trips/clarify", json={"city": "三亚"})
+    assert resp.status_code == 401
+
+
+async def test_trip_history_requires_auth(anon_client):
+    """未鉴权 GET /trips/history → 401。"""
+    resp = await anon_client.get("/api/v1/trips/history")
+    assert resp.status_code == 401
+
+
+async def test_trip_detail_requires_auth(anon_client):
+    """未鉴权 GET /trips/history/{id} → 401（鉴权在任何 DB 访问之前）。"""
+    resp = await anon_client.get(f"/api/v1/trips/history/{uuid.uuid4()}")
+    assert resp.status_code == 401
+
+
+async def test_bearer_token_accepted(anon_client):
+    """支持 Authorization: Bearer <token>：带上有效令牌即放行（不再 401）。
+
+    用 override get_current_user 验证 Bearer 路径走通（凭证解析见 api/auth.py）。
+    """
+    fake = MagicMock()
+    fake.id = "task-bearer"
+    app.dependency_overrides[get_current_user] = _override_get_current_user
+    try:
+        with patch.object(trips_mod.plan_trip_task, "delay", return_value=fake):
+            resp = await anon_client.post(
+                "/api/v1/trips",
+                json={"city": "北京"},
+                headers={"Authorization": "Bearer test-token"},
+            )
+        assert resp.status_code == 200
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)

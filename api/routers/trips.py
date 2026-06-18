@@ -11,12 +11,13 @@ import uuid
 
 import structlog
 from celery.result import AsyncResult
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.auth import get_current_user
 from api.deps import get_pubsub_redis
 from db.models import DemoUser, TripPlan
 from db.session import get_db
@@ -94,8 +95,16 @@ def _build_initial_state(req: TripRequest) -> dict:
 
 
 @router.post("/trips")
-async def create_trip(req: TripRequest, db: AsyncSession = Depends(get_db)) -> dict:
-    """先把 pending 行入库，再派发规划任务到 Celery，立即返回（不阻塞 HTTP）。"""
+async def create_trip(
+    req: TripRequest,
+    user: DemoUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """先把 pending 行入库，再派发规划任务到 Celery，立即返回（不阻塞 HTTP）。
+
+    需鉴权：杜绝匿名调用刷爆 LLM/高德配额与账单。归属以**鉴权令牌**为准
+    （user.token），不信任客户端自报的 req.user_id。
+    """
     state_dict = _build_initial_state(req)
 
     # 预生成主键：让 thread_id、graph 的 checkpoint thread、Celery 任务参数三者对齐，
@@ -104,7 +113,7 @@ async def create_trip(req: TripRequest, db: AsyncSession = Depends(get_db)) -> d
     trip = TripPlan(
         id=trip_id,
         thread_id=str(trip_id),
-        user_id=req.user_id,
+        user_id=user.token,
         city=req.city,
         start_date=req.start_date,
         end_date=req.end_date,
@@ -132,11 +141,13 @@ async def create_trip(req: TripRequest, db: AsyncSession = Depends(get_db)) -> d
 
 
 @router.post("/trips/clarify")
-async def clarify_trip(req: TripRequest) -> dict:
+async def clarify_trip(
+    req: TripRequest,
+    user: DemoUser = Depends(get_current_user),
+) -> dict:
     """规划前主动追问：据初步需求返回 3-4 个澄清问题（单次 LLM 调用，无 MCP）。
 
-    失败（LLM 异常/超时）时降级为空列表，前端据此直接进入规划，不阻塞主流程。
-    方法为 POST 且路径固定，与 GET /trips/{task_id} 不冲突，无需考虑路由顺序。
+    需鉴权：这是一次 LLM 调用，须防匿名滥用。失败时降级为空列表，不阻塞主流程。
     """
     from agents.clarify import generate_questions
 
@@ -150,24 +161,17 @@ async def clarify_trip(req: TripRequest) -> dict:
 
 @router.get("/trips/history")
 async def trip_history(
-    x_demo_token: str = Header(default=""),
+    user: DemoUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     """
-    返回当前 token 用户的最近 20 条规划历史。
+    返回当前登录用户的最近 20 条规划历史（需鉴权）。
 
     路由顺序很关键：必须声明在 /trips/{task_id} 之前，否则 "history" 会被当作 task_id。
     """
-    if not x_demo_token:
-        return []
-    user = (
-        await db.execute(select(DemoUser).where(DemoUser.token == x_demo_token))
-    ).scalar_one_or_none()
-    if not user or user.is_blocked:
-        return []
     stmt = (
         select(TripPlan)
-        .where(TripPlan.user_id == x_demo_token)
+        .where(TripPlan.user_id == user.token)
         .order_by(TripPlan.created_at.desc())
         .limit(20)
     )
@@ -188,21 +192,14 @@ async def trip_history(
 @router.get("/trips/history/{trip_id}")
 async def trip_detail(
     trip_id: str,
-    x_demo_token: str = Header(default=""),
+    user: DemoUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """返回当前 token 用户某条历史行程的**完整计划**（plan_json）。
+    """返回当前登录用户某条历史行程的**完整计划**（plan_json）。需鉴权。
 
-    仅限本人查看（trip.user_id 必须等于该 token），与配额无关——配额用完仍可回看
+    仅限本人查看（trip.user_id 必须等于当前用户），与配额无关——配额用完仍可回看
     自己已生成的行程。路径含字面量 "history" 段，不与 /trips/{task_id} 冲突。
     """
-    if not x_demo_token:
-        raise HTTPException(status_code=401, detail="Demo token required")
-    user = (
-        await db.execute(select(DemoUser).where(DemoUser.token == x_demo_token))
-    ).scalar_one_or_none()
-    if not user or user.is_blocked:
-        raise HTTPException(status_code=403, detail="Invalid or blocked token")
     try:
         tid = uuid.UUID(trip_id)
     except ValueError:
@@ -210,8 +207,8 @@ async def trip_detail(
     trip = (
         await db.execute(select(TripPlan).where(TripPlan.id == tid))
     ).scalar_one_or_none()
-    # 越权防护：只能看自己的（user_id == 当前 token）。
-    if not trip or trip.user_id != x_demo_token:
+    # 越权防护：只能看自己的（user_id == 当前登录用户）。
+    if not trip or trip.user_id != user.token:
         raise HTTPException(status_code=404, detail="Trip not found")
     return {
         "id": str(trip.id),
@@ -277,17 +274,9 @@ async def _event_stream(task_id: str):
 @router.get("/trips/{task_id}/stream")
 async def stream_trip(
     task_id: str,
-    x_demo_token: str = Header(default=""),
-    db: AsyncSession = Depends(get_db),
+    user: DemoUser = Depends(get_current_user),
 ) -> StreamingResponse:
-    """SSE 端点：订阅 Redis pub/sub，把规划过程实时推给浏览器。"""
-    if not x_demo_token:
-        raise HTTPException(status_code=401, detail="Demo token required")
-    user = (
-        await db.execute(select(DemoUser).where(DemoUser.token == x_demo_token))
-    ).scalar_one_or_none()
-    if not user or user.is_blocked:
-        raise HTTPException(status_code=403, detail="Invalid or blocked token")
+    """SSE 端点：订阅 Redis pub/sub，把规划过程实时推给浏览器（需鉴权）。"""
     return StreamingResponse(
         _event_stream(task_id),
         media_type="text/event-stream",
