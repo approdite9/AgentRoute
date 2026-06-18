@@ -17,6 +17,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from api.deps import close_redis
 from api.middleware.rate_limit import RateLimitMiddleware
 from api.routers import health, trips
+from api.routers.demo_access import router as demo_router, admin_router
 from config import settings
 from db.session import engine
 from monitoring.metrics import render_latest
@@ -62,4 +63,6 @@ def metrics() -> Response:
 
 
 app.include_router(trips.router, prefix="/api/v1")
+app.include_router(demo_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/admin")
 app.include_router(health.router)

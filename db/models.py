@@ -7,7 +7,7 @@ ORM 模型 —— 行程计划（trip_plans）与审计日志（audit_logs）。
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, JSON, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -61,3 +61,25 @@ class AuditLog(Base):
     )
 
     trip: Mapped["TripPlan"] = relationship(back_populates="audit_logs")
+
+
+class DemoUser(Base):
+    """演示用户准入表 —— 每个注册用户一行，控制试用配额与状态。"""
+
+    __tablename__ = "demo_users"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    token: Mapped[str] = mapped_column(String(64), unique=True, index=True, nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    email: Mapped[str] = mapped_column(String(256), index=True, nullable=False)
+    purpose: Mapped[str | None] = mapped_column(Text)
+    quota: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    used_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_blocked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    admin_notes: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -18,7 +18,211 @@ import streamlit as st
 import ui
 
 API_BASE = os.environ.get("API_BASE_URL", "http://localhost:8000").rstrip("/")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 USER_ID = "streamlit"  # 标记 UI 提交，便于在 /trips/history 里按用户过滤
+
+
+# ============================================================
+# 演示准入：注册门控 + 配额检查
+# ============================================================
+
+def _demo_register(name: str, email: str, purpose: str) -> dict | None:
+    try:
+        resp = httpx.post(
+            f"{API_BASE}/api/v1/demo/register",
+            json={"name": name, "email": email, "purpose": purpose},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        st.error(f"注册失败，请稍后重试：{exc}")
+        return None
+
+
+def _demo_check(token: str) -> dict:
+    try:
+        resp = httpx.post(
+            f"{API_BASE}/api/v1/demo/check",
+            json={"token": token},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception:
+        # 后端不通时降级：允许继续（避免把正常用户挡在外面）
+        return {"valid": True, "can_use": True, "reason": "ok", "name": ""}
+
+
+def _demo_use(token: str) -> bool:
+    try:
+        resp = httpx.post(
+            f"{API_BASE}/api/v1/demo/use",
+            json={"token": token},
+            timeout=10.0,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return True  # 降级：不因记录失败而阻塞用户
+
+
+def _admin_list_users() -> list[dict] | None:
+    try:
+        resp = httpx.get(
+            f"{API_BASE}/admin/demo/users",
+            headers={"x-admin-password": ADMIN_PASSWORD},
+            timeout=10.0,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as exc:
+        st.error(f"获取用户列表失败：{exc}")
+        return None
+
+
+def _admin_approve(user_id: str, extra: int, notes: str) -> bool:
+    try:
+        resp = httpx.post(
+            f"{API_BASE}/admin/demo/approve/{user_id}",
+            json={"extra_quota": extra, "notes": notes},
+            headers={"x-admin-password": ADMIN_PASSWORD},
+            timeout=10.0,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _admin_block(user_id: str) -> bool:
+    try:
+        resp = httpx.post(
+            f"{API_BASE}/admin/demo/block/{user_id}",
+            headers={"x-admin-password": ADMIN_PASSWORD},
+            timeout=10.0,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def render_registration_gate() -> bool:
+    """渲染注册/准入门控。返回 True 表示用户已通过验证、可以使用 Agent。"""
+    params = st.query_params
+    token = params.get("t", "")
+
+    # --- 已有 token：检查配额 ---
+    if token:
+        info = _demo_check(token)
+        if info.get("can_use"):
+            # 把用户名存进 session，后续规划时一起写库
+            st.session_state.setdefault("demo_user_name", info.get("name", ""))
+            st.session_state["demo_token"] = token
+            return True
+        # 配额用完或封禁
+        reason = info.get("reason", "")
+        name = info.get("name", "用户")
+        if reason == "blocked":
+            st.error(f"😔 {name}，你的账号已被封禁，如有疑问请联系管理员。")
+        else:
+            st.warning(
+                f"👋 {name}，你的免费试用次数已用完。\n\n"
+                "如需继续使用，请联系管理员审批：barrninerichard@gmail.com"
+            )
+        st.stop()
+
+    # --- 无 token：显示注册表单 ---
+    st.markdown("## 👋 欢迎使用智能旅行助手（演示版）")
+    st.info(
+        "这是一个 AI 驱动的旅行规划助手演示。\n\n"
+        "每位用户可免费体验 **1 次**完整行程规划，请填写下方信息后开始使用。"
+    )
+
+    with st.form("demo_register_form"):
+        name = st.text_input("你的姓名 *", placeholder="例如：张三")
+        email = st.text_input("联系邮箱 *", placeholder="your@email.com")
+        purpose = st.text_area(
+            "你打算规划什么旅行？（选填）",
+            placeholder="例如：五一去杭州玩 3 天，想找亲子景点",
+            height=80,
+        )
+        submitted = st.form_submit_button("🚀 开始免费体验", type="primary", use_container_width=True)
+
+    if submitted:
+        name = name.strip()
+        email = email.strip()
+        if not name:
+            st.error("请填写姓名")
+            return False
+        if not email or "@" not in email:
+            st.error("请填写有效的邮箱地址")
+            return False
+
+        with st.spinner("正在验证…"):
+            result = _demo_register(name, email, purpose)
+
+        if result:
+            token = result["token"]
+            st.query_params["t"] = token
+            st.session_state["demo_token"] = token
+            st.session_state["demo_user_name"] = name
+            if result.get("already_registered") and not result.get("can_use"):
+                st.warning(
+                    "该邮箱已注册且试用次数已用完。\n\n"
+                    "如需继续使用请联系管理员：barrninerichard@gmail.com"
+                )
+                st.stop()
+            st.rerun()
+
+    return False
+
+
+def render_admin_panel():
+    """侧边栏管理面板（仅当 URL 含 ?admin=1 时显示入口）。"""
+    if st.query_params.get("admin") != "1":
+        return
+    if not ADMIN_PASSWORD:
+        return
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🔐 管理员面板")
+    pwd = st.sidebar.text_input("管理密码", type="password", key="admin_pwd_input")
+    if pwd != ADMIN_PASSWORD:
+        return
+
+    st.sidebar.success("✅ 已验证")
+    if st.sidebar.button("刷新用户列表", use_container_width=True):
+        st.session_state["admin_users"] = _admin_list_users()
+
+    users = st.session_state.get("admin_users") or _admin_list_users() or []
+    st.session_state["admin_users"] = users
+
+    st.sidebar.markdown(f"**共 {len(users)} 位注册用户**")
+
+    for u in users:
+        label = f"{'🚫' if u['is_blocked'] else ('✅' if u['remaining'] > 0 else '⏰')} {u['name']} ({u['email']})"
+        with st.sidebar.expander(label, expanded=False):
+            st.caption(f"用途：{u['purpose'] or '—'}")
+            st.caption(f"配额：{u['used_count']} / {u['quota']}  剩余：{u['remaining']}")
+            st.caption(f"注册：{(u['created_at'] or '')[:10]}  最后使用：{(u['last_used_at'] or '—')[:10]}")
+            if u['admin_notes']:
+                st.caption(f"备注：{u['admin_notes']}")
+
+            col_a, col_b = st.columns(2)
+            with col_a:
+                notes = st.text_input("备注", key=f"notes_{u['id']}", placeholder="可选")
+                if st.button("➕ +1 次", key=f"approve_{u['id']}", use_container_width=True):
+                    if _admin_approve(u["id"], 1, notes):
+                        st.success("已追加")
+                        st.session_state["admin_users"] = _admin_list_users()
+                        st.rerun()
+            with col_b:
+                st.markdown("&nbsp;", unsafe_allow_html=True)
+                if not u["is_blocked"]:
+                    if st.button("🚫 封禁", key=f"block_{u['id']}", use_container_width=True):
+                        if _admin_block(u["id"]):
+                            st.warning("已封禁")
+                            st.session_state["admin_users"] = _admin_list_users()
+                            st.rerun()
 
 # ---- 页面配置 ----
 st.set_page_config(
@@ -153,6 +357,10 @@ def run_and_store(req: dict, label: str) -> None:
     elif not plan:
         st.error("😟 未获取到行程，请稍后重试或调整参数。")
     else:
+        # 规划成功：消耗一次演示配额
+        token = st.session_state.get("demo_token", "")
+        if token:
+            _demo_use(token)
         st.session_state.plan_data = plan
         st.session_state.phase = "input"  # 退出追问阶段，回到展示
         st.rerun()
@@ -199,6 +407,14 @@ def fetch_history(user_id: str) -> list[dict] | None:
     except Exception:  # noqa: BLE001 —— 后端未起时静默降级
         return None
 
+
+# ============================================================
+# 门控：未通过则停止渲染，通过后继续展示规划 UI
+# ============================================================
+if not render_registration_gate():
+    st.stop()
+
+render_admin_panel()
 
 # ---- 主 UI ----
 st.markdown('<div class="main-header">🧳 智能旅行助手</div>', unsafe_allow_html=True)
