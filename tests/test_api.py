@@ -124,3 +124,17 @@ async def test_clarify_graceful_on_error(client):
         resp = await client.post("/api/v1/trips/clarify", json={"city": "三亚"})
     assert resp.status_code == 200
     assert resp.json()["questions"] == []
+
+
+async def test_trip_detail_requires_token(client):
+    """历史详情端点未带 demo token → 401（鉴权在任何 DB 访问之前）。"""
+    import uuid as _uuid
+    resp = await client.get(f"/api/v1/trips/history/{_uuid.uuid4()}")
+    assert resp.status_code == 401
+
+
+async def test_trip_history_requires_no_token_returns_empty(client):
+    """历史列表未带 token → 返回空列表（不报错）。"""
+    resp = await client.get("/api/v1/trips/history")
+    assert resp.status_code == 200
+    assert resp.json() == []

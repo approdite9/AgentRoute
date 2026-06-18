@@ -185,6 +185,44 @@ async def trip_history(
     ]
 
 
+@router.get("/trips/history/{trip_id}")
+async def trip_detail(
+    trip_id: str,
+    x_demo_token: str = Header(default=""),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """返回当前 token 用户某条历史行程的**完整计划**（plan_json）。
+
+    仅限本人查看（trip.user_id 必须等于该 token），与配额无关——配额用完仍可回看
+    自己已生成的行程。路径含字面量 "history" 段，不与 /trips/{task_id} 冲突。
+    """
+    if not x_demo_token:
+        raise HTTPException(status_code=401, detail="Demo token required")
+    user = (
+        await db.execute(select(DemoUser).where(DemoUser.token == x_demo_token))
+    ).scalar_one_or_none()
+    if not user or user.is_blocked:
+        raise HTTPException(status_code=403, detail="Invalid or blocked token")
+    try:
+        tid = uuid.UUID(trip_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid trip id")
+    trip = (
+        await db.execute(select(TripPlan).where(TripPlan.id == tid))
+    ).scalar_one_or_none()
+    # 越权防护：只能看自己的（user_id == 当前 token）。
+    if not trip or trip.user_id != x_demo_token:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return {
+        "id": str(trip.id),
+        "city": trip.city,
+        "start_date": trip.start_date,
+        "end_date": trip.end_date,
+        "status": trip.status,
+        "plan": trip.plan_json,
+    }
+
+
 @router.get("/trips/{task_id}")
 async def get_trip(task_id: str) -> dict:
     """查询 Celery result backend 中的任务状态与结果。"""

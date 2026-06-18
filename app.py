@@ -462,6 +462,23 @@ def fetch_history(user_id: str) -> list[dict] | None:
         return None
 
 
+def fetch_trip_plan(trip_id: str) -> dict | None:
+    """拉取某条历史行程的完整计划（plan_json）。配额用完也能回看自己的行程。"""
+    token = get_user_id()
+    if not token or token == "anonymous":
+        return None
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            resp = client.get(
+                f"{API_BASE}/api/v1/trips/history/{trip_id}",
+                headers={"x-demo-token": token},
+            )
+            resp.raise_for_status()
+            return resp.json().get("plan")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ============================================================
 # 门控：未通过则停止渲染，通过后继续展示规划 UI
 # ============================================================
@@ -575,7 +592,8 @@ with st.sidebar:
     )
     submit_btn = st.button("🚀 开始规划", type="primary", use_container_width=True)
 
-    # 历史记录（读自 Postgres，经 API；证明 UI 提交确实落库）。
+    # 历史记录（读自 Postgres，经 API）：完成的行程可点「查看」回看完整计划，
+    # 配额用完也能查看（详情接口与配额无关，仅校验本人 token）。
     st.markdown("---")
     with st.expander("🕘 历史记录", expanded=False):
         history = fetch_history(get_user_id())
@@ -586,7 +604,21 @@ with st.sidebar:
         else:
             for r in history[:10]:
                 icon = {"done": "✅", "error": "❌", "planning": "⏳", "pending": "⏳"}.get(r.get("status"), "•")
-                st.caption(f"{icon} {r.get('city', '')} · {r.get('start_date', '')}~{r.get('end_date', '')}")
+                label = f"{icon} {r.get('city', '')} · {r.get('start_date', '')}~{r.get('end_date', '')}"
+                if r.get("status") == "done":
+                    c_txt, c_btn = st.columns([3, 1])
+                    c_txt.caption(label)
+                    if c_btn.button("查看", key=f"view_{r['id']}", use_container_width=True):
+                        with st.spinner("加载行程…"):
+                            past = fetch_trip_plan(r["id"])
+                        if past:
+                            st.session_state.plan_data = past
+                            st.session_state.phase = "input"
+                            st.rerun()
+                        else:
+                            st.warning("无法加载该行程，请稍后重试。")
+                else:
+                    st.caption(label)
 
 
 # ============ 会话状态 ============
