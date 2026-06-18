@@ -14,6 +14,14 @@ dockerfilePath = "Dockerfile"
 [deploy]
 # startCommand 和 healthcheckPath 均不在此处设置 —— 每个服务在 Railway Dashboard 单独配置，
 # 避免 worker（无 HTTP）被 /health 探活超时判定为失败。
+#
+# 各 service 规范启动命令（在 Railway Dashboard > 对应服务 > Settings > Start Command 配置）：
+#   api:       sh -c 'uvicorn api.main:app --host 0.0.0.0 --port $PORT'
+#   worker:    celery -A tasks.celery_app worker -Q trip.planning,trip.weather,trip.poi --concurrency=2 --loglevel=info
+#   streamlit: sh -c 'streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true \
+#                --server.enableCORS false --server.enableXsrfProtection false --server.enableWebsocketCompression false'
+# 注意：worker 必须用上面的 -Q 显式消费三个队列；任务路由见 tasks/celery_app.py
+# （已设 fail-safe 默认队列=trip.planning，漏配 -Q 也不会卡死，但生产请按上面显式配置）。
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 
