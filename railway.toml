@@ -19,11 +19,12 @@ restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 10
 
 [variables]
-DATABASE_URL = "${{Postgres.DATABASE_URL}}"
-REDIS_URL = "${{Redis.REDIS_URL}}"
 PYTHONPATH = "/app"
 MODEL_NAME = "qwen3-max"
 TEMPERATURE = "0.7"
 MAX_TOKENS = "8192"
 LANGCHAIN_TRACING_V2 = "false"
 RATE_LIMIT_PER_MINUTE = "10"
+# DATABASE_URL 和 REDIS_URL 必须在 Railway Dashboard > Variables 里用引用语法手动设置：
+#   DATABASE_URL  →  ${{Postgres.DATABASE_URL}}
+#   REDIS_URL     →  ${{Redis.REDIS_URL}}
