@@ -25,7 +25,7 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 | **A2 上下文/记忆** | ✅ **已落地** | `memory/` 长期偏好画像（Redis db6，跨会话补全/回写）+ 接入 planner |
 | A3 Guardrails | ⏳ 待做 | 输出校验 + PII 脱敏（金融刚需） |
 | **A4 多模型网关** | ✅ **已落地** | `gateway/` 故障转移（主→备用模型链）+ per-user token 预算 + 指标 |
-| A5 语义缓存 + OTel | ⏳ 待做 | GPTCache + OpenTelemetry |
+| **A5 语义缓存 + OTel** | ✅ **已落地** | `cache/semantic.py` 相似 query 命中 + `monitoring/otel.py` OTel（no-op 降级）|
 | 主线 B 业务迁移 | ⏳ 待做 | 迁移到 Boss 招聘 / 合同续签 |
 
 > GitHub：[https://github.com/approdite9/AgentRoute](https://github.com/approdite9/AgentRoute) （main 与 origin 同步，CI 全绿）
@@ -113,8 +113,7 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 
 ### A4. 多模型网关 + 成本治理 ✅ 已落地
 
-**2026 痛点**：LLMOps 最大缺口是「没在 LLM 基础设施里建成本控制」。
-**已完成**：新增 `gateway/` 包，故障转移 + 成本治理，**不引入 litellm 重依赖、不改 create_llm 契约**。
+**2026 痛点**：LLMOps 最大缺口是「没在 LLM 基础设施里建成本控制」。 **已完成**：新增 `gateway/` 包，故障转移 + 成本治理，**不引入 litellm 重依赖、不改 create_llm 契约**。
 
 | 项 | 已落地实现 |
 | --- | --- |
@@ -129,10 +128,19 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 
 > 说明：沿用「复用现有工厂 + 薄封装」策略（同 A1）——网关是**可选增强层**，现有节点仍可直接调 `create_llm`，零侵入。
 
-### A5. 语义缓存 + OpenTelemetry 🟡 中
+### A5. 语义缓存 + OpenTelemetry ✅ 已落地
 
-- **语义缓存**：现有 Redis 只做精确匹配缓存；升级为 **GPTCache 思路**，相似 query 命中缓存，显著降本
-- **可观测性升级到 OTel**：行业在收敛到 OpenTelemetry 标准（与 n8n 2.37 的 OpenTelemetry 同方向），把 structlog/Prometheus/LangSmith 的追踪统一到 OTel trace
+**已完成**：语义缓存 + OTel 接入，均**免依赖免配额、优雅降级**，与现有精确缓存/监控互补。
+
+| 项 | 已落地实现 |
+| --- | --- |
+| 语义缓存 | `cache/semantic.py`：精确 miss 后用向量余弦相似度找语义等价历史 query（如「成都三日游」↔「成都玩三天」），命中即复用。Redis **db7**，阈值默认 0.92 |
+| 向量化复用 | 复用 `rag.embeddings.get_embedder()`：默认 HashingEmbedder（离线/确定性），`RAG_EMBEDDER=dashscope` 走线上 embedding，无新依赖 |
+| OTel 接入 | `monitoring/otel.py`：`init_tracing()` + `span()` 上下文管理器。**未装 opentelemetry / 未配 `OTEL_EXPORTER_OTLP_ENDPOINT` 时降级为零开销 no-op**，装了并配 endpoint 则产出真实 span |
+| 优雅降级 | 语义缓存 Redis/embedder 不可用 → get 视为 miss、set 静默跳过；OTel 无依赖 → no-op 且不吞异常 |
+| 测试 | `tests/test_semantic_otel.py`：余弦相似度 / 语义相近性 / 降级往返 / OTel no-op 幂等与异常传播，无需 Redis/OTel collector |
+
+> 与 n8n 2.37 的 OpenTelemetry 同方向——行业在把可观测性收敛到 OTel 标准。本次先打通 no-op 可切换的接入点，后续可把 structlog/Prometheus/LangSmith 的追踪统一挂到 OTel trace。
 
 ---
 
