@@ -1,16 +1,20 @@
 """
 LangGraph StateGraph 组装 —— 把各节点连成完整的行程规划流水线。
 
-流程（首轮规划）：
-    START ─(router)→ weather → poi → hotel → route ─┬─(continue)→ review → rag → synthesize → geocode → optimize_route → END
-                                                     ├─(retry)───→ poi
-                                                     └─(error)───→ error_handler → END
-    rag 为 RAG 内容检索节点（best-effort，攻略/口碑增强）；geocode 给缺坐标的景点/酒店
-    补经纬度（best-effort，maps_geo）；optimize_route 做几何最近邻路线优化（best-effort，
-    按直线距离重排每天景点、消除绕路）。三者失败都不影响出稿。多轮修改路径 synthesize 后同样过这两步。
+流程（首轮规划 —— 并行 Fan-Out / Fan-In）：
+    START ─(entry_router)→ ┬─ weather ─┐
+                           ├─ poi ─────┼──→ route ─┬─(continue)→ review → rag → synthesize → geocode → optimize_route → END
+                           └─ hotel ───┘           ├─(retry)───→ poi
+                                                    └─(error)───→ error_handler → END
+
+    weather / poi / hotel 三个采集节点**并行执行**（同一 LangGraph super-step），
+    全部完成后汇聚到 route 节点（Fan-In）。route 依赖 poi_data 规划路线。
+    rag 为 RAG 内容检索节点（best-effort）；geocode 补经纬度（best-effort）；
+    optimize_route 做几何最近邻路线优化（best-effort）。三者失败都不影响出稿。
 
 流程（多轮修改，复用同一 thread 的检查点）：
-    START ─(router)→ synthesize → END        # 已有成稿 + 修改意见 → 直接重整合，跳过采集
+    START ─(entry_router)→ synthesize → geocode → optimize_route → END
+    已有成稿 + 修改意见 → 直接重整合，跳过采集。
 
 review 为人审断点：仅当 state["hitl_enabled"] 为真时 interrupt 暂停（交互式流程）；
 否则透传，Celery / CLI 等自动化流程不受影响。
@@ -34,6 +38,7 @@ from agents.nodes import (
     error_node,
     is_transient_error,
 )
+from security import sanitize_trip_inputs
 
 
 def should_continue(state: TripState) -> str:
@@ -51,23 +56,41 @@ def should_continue(state: TripState) -> str:
     return "error"
 
 
-def entry_router(state: TripState) -> str:
+def entry_router(state: TripState) -> list[str]:
     """入口分流：
 
     - 多轮修改：检查点里已有成稿（final_plan）且本次带来了修改意见（user_feedback）
       → 直接进 synthesize 重整合，跳过 weather/poi/hotel/route 的重复采集（省 token）。
-    - 其余（首轮规划）：从 weather 开始正常跑全流程。
+    - 其余（首轮规划）：Fan-Out 并行启动 weather + poi + hotel 三个采集节点。
+      返回列表 → LangGraph 在同一 super-step 内并行执行所有目标节点。
 
     注意：interrupt 恢复走 Command(resume=...)，不经入口路由，故不会误判为修改。
     """
     if state.get("final_plan") and (state.get("user_feedback") or "").strip():
-        return "synthesize"
-    return "weather"
+        return ["synthesize"]
+    # Fan-Out: 三个采集节点并行执行（LangGraph 对条件边返回列表时并行调度所有目标）
+    return ["weather", "poi", "hotel"]
+
+
+def sanitize_node(state: TripState) -> dict:
+    """入口安全节点：对用户可控字段执行 prompt injection 清洗 + 检测。
+
+    在所有业务节点之前执行，确保进入 LLM 的数据已经过安全过滤。
+    高风险注入尝试会被清空（字段置空）并记录审计日志。
+    """
+    sanitized = sanitize_trip_inputs(dict(state))
+    # 只返回被修改的字段（LangGraph 会 merge 到 state 中）
+    updates = {}
+    for key in ["extra", "user_feedback", "city", "hotel_type", "origin_city", "preferences", "transport"]:
+        if sanitized.get(key) != state.get(key):
+            updates[key] = sanitized[key]
+    return updates
 
 
 def build_graph(checkpointer: Any = None) -> Any:
     builder = StateGraph(TripState)
 
+    builder.add_node("sanitize", sanitize_node)
     builder.add_node("weather", weather_node)
     builder.add_node("poi", poi_node)
     builder.add_node("hotel", hotel_node)
@@ -79,15 +102,24 @@ def build_graph(checkpointer: Any = None) -> Any:
     builder.add_node("optimize_route", optimize_route_node)
     builder.add_node("error_handler", error_node)
 
-    # Entry: 条件入口 —— 首轮走 weather，多轮修改直达 synthesize。
+    # START → sanitize: 所有用户输入先过安全清洗层（prompt injection 防护）
+    builder.add_edge(START, "sanitize")
+
+    # sanitize → entry_router: 清洗后分流到采集或修改路径
     builder.add_conditional_edges(
-        START,
+        "sanitize",
         entry_router,
-        {"weather": "weather", "synthesize": "synthesize"},
+        {"weather": "weather", "poi": "poi", "hotel": "hotel", "synthesize": "synthesize"},
     )
-    builder.add_edge("weather", "poi")
-    builder.add_edge("poi", "hotel")
+
+    # ── 并行采集 Fan-In ──────────────────────────────────────────────────
+    # weather、poi、hotel 并行执行完毕后汇聚到 route 节点。
+    # LangGraph 会等待 route 的所有入边（3 条）对应的节点全部完成后才执行 route。
+    # route 依赖 poi_data 来规划路线；weather/hotel 数据为 best-effort 增补。
+    builder.add_edge("weather", "route")
+    builder.add_edge("poi", "route")
     builder.add_edge("hotel", "route")
+
     # 采集成功 → 人审断点 review → RAG 内容检索 → synthesize。失败仍按原逻辑重试 / 报错。
     builder.add_conditional_edges(
         "route",

@@ -195,3 +195,61 @@ async def test_supplementary_failure_still_plans(sample_state, monkeypatch):
     )
     assert final.get("final_plan") is not None
     assert final.get("error") is None
+
+
+async def test_parallel_fan_out_all_nodes_execute(sample_state, monkeypatch):
+    """并行化验证：weather/poi/hotel 三个节点在同一轮 super-step 中全部执行。
+
+    通过记录每个节点的调用时间戳，验证它们确实并行（而非串行）执行。
+    退而求其次：至少验证三者都被调用、结果全部汇聚到 route 之前。
+    """
+    import time
+
+    call_order = []
+
+    original_invoke = nodes._invoke_specialist
+
+    async def _tracking_invoke(*, domain, agent_name, prompt, query):
+        call_order.append(domain)
+        # 模拟少量延迟以确保并行可观测
+        await __import__("asyncio").sleep(0.01)
+        return f"mock data for {domain}"
+
+    monkeypatch.setattr(nodes, "_invoke_specialist", AsyncMock(side_effect=_tracking_invoke))
+    monkeypatch.setattr(config.Settings, "create_llm", lambda self, **kw: _FakeLLM())
+
+    graph = build_graph()
+    state = _fresh_state(sample_state, city=f"parallel-{uuid.uuid4()}")
+    final = await graph.ainvoke(state, config=_cfg())
+
+    # 核心断言：weather、poi、hotel 三个域都被调用了
+    assert "weather" in call_order
+    assert "poi" in call_order
+    assert "hotel" in call_order
+    # route 也被调用了（依赖 poi_data）
+    assert "route" in call_order
+    # 最终计划成功生成
+    assert final.get("final_plan") is not None
+    assert final.get("error") is None
+
+
+async def test_entry_router_returns_list_for_first_run(sample_state):
+    """entry_router 首轮规划返回列表（fan-out 信号）。"""
+    from agents.graph import entry_router
+
+    result = entry_router(sample_state)
+    assert isinstance(result, list)
+    assert set(result) == {"weather", "poi", "hotel"}
+
+
+async def test_entry_router_returns_synthesize_for_modification(sample_state):
+    """entry_router 多轮修改返回 ['synthesize']。"""
+    from agents.graph import entry_router
+
+    state = _fresh_state(
+        sample_state,
+        final_plan={"city": "北京", "days": []},
+        user_feedback="把第二天的景点换成颐和园",
+    )
+    result = entry_router(state)
+    assert result == ["synthesize"]

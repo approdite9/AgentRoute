@@ -6,6 +6,8 @@ Redis 缓存层客户端 —— 异步连接池 + 通用读写 + 节点函数缓
   - 连接池为类级单例，懒加载；池在第一次取用时按 settings.redis_url 创建。
   - 值统一以 JSON 字符串存储（decode_responses=True，存取均为 str）。
   - 缓存键约定：同一城市 + 同一日期 → TTL 窗口内命中同一份结果。
+  - **Graceful Degradation**：Redis 不可用时缓存层静默降级（读返回 None、写跳过），
+    不影响上层业务逻辑——节点会直接调用 LLM/MCP（等价于 cache miss），只是慢一些。
 """
 import asyncio
 import contextvars
@@ -14,6 +16,7 @@ import json
 from functools import wraps
 
 import redis.asyncio as aioredis
+from redis.exceptions import RedisError, ConnectionError as RedisConnectionError
 import structlog
 
 from config import settings
@@ -69,16 +72,29 @@ class CacheClient:
 
 
 async def cache_get(key: str) -> dict | None:
-    """读缓存：命中返回反序列化后的 dict，未命中返回 None。"""
-    r = await CacheClient.get()
-    val = await r.get(key)
-    return json.loads(val) if val else None
+    """读缓存：命中返回反序列化后的 dict，未命中返回 None。
+
+    Redis 不可用时静默降级为 cache miss（返回 None），不影响上层业务。
+    """
+    try:
+        r = await CacheClient.get()
+        val = await r.get(key)
+        return json.loads(val) if val else None
+    except (RedisError, RedisConnectionError, OSError, asyncio.TimeoutError) as exc:
+        logger.warning("cache_get_degraded", key=key, error=str(exc))
+        return None
 
 
 async def cache_set(key: str, value: dict, ttl: int) -> None:
-    """写缓存：JSON 序列化后带 TTL 写入（ensure_ascii=False 以保留中文）。"""
-    r = await CacheClient.get()
-    await r.setex(key, ttl, json.dumps(value, ensure_ascii=False))
+    """写缓存：JSON 序列化后带 TTL 写入（ensure_ascii=False 以保留中文）。
+
+    Redis 不可用时静默跳过写入，不影响上层业务——下次读取会 cache miss 后重新计算。
+    """
+    try:
+        r = await CacheClient.get()
+        await r.setex(key, ttl, json.dumps(value, ensure_ascii=False))
+    except (RedisError, RedisConnectionError, OSError, asyncio.TimeoutError) as exc:
+        logger.warning("cache_set_degraded", key=key, error=str(exc))
 
 
 def cached(key_template: str, ttl: int):
@@ -124,10 +140,23 @@ def cached(key_template: str, ttl: int):
 
 
 async def get_cache_info() -> dict:
-    """Redis keyspace 命中/未命中统计（供 Sprint 5 的 /health 端点使用）。"""
-    r = await CacheClient.get()
-    info = await r.info("stats")
-    return {
-        "keyspace_hits": info.get("keyspace_hits", 0),
-        "keyspace_misses": info.get("keyspace_misses", 0),
-    }
+    """Redis keyspace 命中/未命中统计（供 /health 端点使用）。
+
+    Redis 不可用时返回降级标志，不影响健康检查端点响应。
+    """
+    try:
+        r = await CacheClient.get()
+        info = await r.info("stats")
+        return {
+            "keyspace_hits": info.get("keyspace_hits", 0),
+            "keyspace_misses": info.get("keyspace_misses", 0),
+            "status": "connected",
+        }
+    except (RedisError, RedisConnectionError, OSError, asyncio.TimeoutError) as exc:
+        logger.warning("cache_info_degraded", error=str(exc))
+        return {
+            "keyspace_hits": -1,
+            "keyspace_misses": -1,
+            "status": "degraded",
+            "error": str(exc),
+        }

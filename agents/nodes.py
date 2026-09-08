@@ -429,7 +429,12 @@ def review_node(state: TripState) -> dict:
 # ==================== 综合 / 错误节点 ====================
 
 def _build_synthesis_input(state: TripState) -> str:
-    """把已采集的全部数据 + 行程参数拼成给整合 LLM 的输入。"""
+    """把已采集的全部数据 + 行程参数拼成给整合 LLM 的输入。
+
+    用户可控字段（extra / user_feedback）用 <user-data> 标签包裹，
+    配合系统提示中的声明，让 LLM 区分指令与用户数据。
+    """
+    from security import wrap_user_input
     # 旅行人群画像：拼成一行「同伴类型 · N人 · 预算档位」，缺省项省略。
     persona_bits = []
     if state.get("party_type"):
@@ -459,7 +464,7 @@ def _build_synthesis_input(state: TripState) -> str:
         f"旅行偏好：{'、'.join(state.get('preferences') or []) or '无'}",
         f"住宿偏好：{state.get('hotel_type') or '不限'}",
         f"交通偏好：{'、'.join(state.get('transport') or []) or '不限'}",
-        f"额外要求：{state.get('extra') or '无'}",
+        f"额外要求：{wrap_user_input(state.get('extra') or '无')}",
         "",
         "【旅行人群】",
         persona,
