@@ -203,11 +203,7 @@ async def test_parallel_fan_out_all_nodes_execute(sample_state, monkeypatch):
     通过记录每个节点的调用时间戳，验证它们确实并行（而非串行）执行。
     退而求其次：至少验证三者都被调用、结果全部汇聚到 route 之前。
     """
-    import time
-
     call_order = []
-
-    original_invoke = nodes._invoke_specialist
 
     async def _tracking_invoke(*, domain, agent_name, prompt, query):
         call_order.append(domain)

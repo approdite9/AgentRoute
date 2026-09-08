@@ -3,8 +3,6 @@ Prompt Injection 防护测试 —— 验证检测、清洗、边界标记三层�
 
 纯函数测试，无外部依赖，毫秒级执行。
 """
-import pytest
-
 from security import (
     detect_injection,
     sanitize_input,

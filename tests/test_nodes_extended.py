@@ -10,10 +10,9 @@
 缓存固定 db 2；autouse 夹具每用例前清空并重置 MCP 单例。
 """
 import uuid
-import json
 
 import pytest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import config
 import agents.nodes as nodes
@@ -28,7 +27,7 @@ from agents.nodes import (
     DEFAULT_RESUME,
 )
 from mcp_client import McpClientManager
-from schemas import TravelPlan, DayPlan, Attraction, Hotel
+from schemas import TravelPlan, DayPlan
 import redis.asyncio as aioredis
 
 pytestmark = pytest.mark.anyio
