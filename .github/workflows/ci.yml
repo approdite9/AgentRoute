@@ -45,7 +45,8 @@ jobs:
           pip install ruff
 
       - name: Lint (ruff · pyflakes)
-        run: ruff check . --select F
+        # 用 GitHub 注解格式输出，失败时错误会出现在 annotations 里（含文件:行号:规则）。
+        run: ruff check . --select F --output-format=github
 
       - name: Run tests
         env:
