@@ -7,8 +7,6 @@
 """
 from __future__ import annotations
 
-import pytest
-
 from eval import thresholds
 from eval.llm_judge import JudgeScore, judge_batch, judge_one
 
