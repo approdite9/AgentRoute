@@ -53,3 +53,14 @@ jobs:
           DATABASE_URL: ""
           LANGCHAIN_TRACING_V2: "false"
         run: pytest -q
+
+      # 评估门禁：编排「计划质量 + RAG 检索 + LLM-as-judge」三层评估。
+      # 无 DASHSCOPE_API_KEY 时，LLM 判官自动降级为词面代理且不参与门禁，
+      # 仅「计划质量 + RAG recall」这类免配额、结果确定的指标作为红线。
+      # 分数低于 eval/thresholds.py 的 GATE 阈值 → --strict 使该步骤退出码 1，阻断合并。
+      - name: Eval gate (质量门禁)
+        env:
+          REDIS_URL: redis://localhost:6379
+          DATABASE_URL: ""
+          LANGCHAIN_TRACING_V2: "false"
+        run: python -m eval.run_gate --strict

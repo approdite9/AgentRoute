@@ -1,0 +1,27 @@
+[
+  {
+    "question": "成都火锅推荐什么锅底，外地人怎么选？",
+    "where": {"city": "成都", "category": "美食"},
+    "reference_answer": "成都火锅以牛油锅底最地道，外地肠胃建议选清油锅底，毛肚、鸭肠、脑花是必点。"
+  },
+  {
+    "question": "成都除了喝茶采耳，还有哪些本地日常小吃？",
+    "where": {"city": "成都", "category": "美食"},
+    "reference_answer": "串串香、冷锅串串是本地日常，钵钵鸡按签计费；小吃有钟水饺、龙抄手、甜水面、糖油果子、三大炮。"
+  },
+  {
+    "question": "三亚出海浮潜有什么要注意的？",
+    "where": {"city": "三亚"},
+    "reference_answer": "根据三亚海滨攻略给出与浮潜/出海相关的注意事项。"
+  },
+  {
+    "question": "长沙夜宵有什么值得吃的？",
+    "where": {"city": "长沙", "category": "美食"},
+    "reference_answer": "根据长沙美食攻略给出夜宵推荐。"
+  },
+  {
+    "question": "北京故宫和长城怎么安排行程？",
+    "where": {"city": "北京", "category": "历史文化"},
+    "reference_answer": "根据北京历史文化攻略给出故宫、长城的行程安排建议。"
+  }
+]
