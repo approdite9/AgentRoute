@@ -53,7 +53,16 @@ jobs:
           REDIS_URL: redis://localhost:6379
           DATABASE_URL: ""
           LANGCHAIN_TRACING_V2: "false"
-        run: pytest -q
+        # 失败时把简短摘要写入 step summary，便于在 Actions 页与 API 直接定位失败用例。
+        run: |
+          set -o pipefail
+          pytest -q --tb=short -ra 2>&1 | tee pytest_out.txt || {
+            echo "## pytest 失败摘要" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            tail -n 60 pytest_out.txt >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          }
 
       # 评估门禁：编排「计划质量 + RAG 检索 + LLM-as-judge」三层评估。
       # 无 DASHSCOPE_API_KEY 时，LLM 判官自动降级为词面代理且不参与门禁，
