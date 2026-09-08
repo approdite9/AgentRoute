@@ -6,6 +6,6 @@
 - 阈值集中在 thresholds.py；run_gate.py --strict 才作为 CI 门禁（分数不达标 exit 1）。
 
 对外入口：
-    python -m eval.run_gate            # 跑全部评估，打印报告（不阻塞）
-    python -m eval.run_gate --strict   # 作为门禁：任一指标低于阈值 → exit 1
+    python -m evaluation.run_gate            # 跑全部评估，打印报告（不阻塞）
+    python -m evaluation.run_gate --strict   # 作为门禁：任一指标低于阈值 → exit 1
 """

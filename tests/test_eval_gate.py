@@ -7,8 +7,8 @@
 """
 from __future__ import annotations
 
-from eval import thresholds
-from eval.llm_judge import JudgeScore, judge_batch, judge_one
+from evaluation import thresholds
+from evaluation.llm_judge import JudgeScore, judge_batch, judge_one
 
 
 def test_thresholds_gate_not_above_target():
@@ -48,7 +48,7 @@ def test_judge_batch_empty_is_perfect():
 def test_run_gate_report_mode_returns_zero(monkeypatch):
     """报告模式（非 strict）应始终退出码 0，不阻塞。"""
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    from eval.run_gate import run
+    from evaluation.run_gate import run
 
     code = run(strict=False)
     assert code == 0
@@ -57,7 +57,7 @@ def test_run_gate_report_mode_returns_zero(monkeypatch):
 def test_run_gate_strict_passes_on_plan_quality(monkeypatch):
     """strict 模式下，免配额的计划质量指标达标即应通过（RAG/LLM 缺环境时不误判红）。"""
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    from eval.run_gate import run
+    from evaluation.run_gate import run
 
     code = run(strict=True)
     assert code == 0

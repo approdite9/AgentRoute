@@ -22,16 +22,16 @@
 ## 用法
 
 ```bash
-python -m eval.run_gate                    # 报告模式，退出码恒为 0（不阻塞）
-python -m eval.run_gate --strict           # 门禁模式：参与门禁的指标不达标 → 退出码 1
-python -m eval.run_gate --json report.json # 附带写出结构化结果（供 Grafana/看板消费）
+python -m evaluation.run_gate                    # 报告模式，退出码恒为 0（不阻塞）
+python -m evaluation.run_gate --strict           # 门禁模式：参与门禁的指标不达标 → 退出码 1
+python -m evaluation.run_gate --json report.json # 附带写出结构化结果（供 Grafana/看板消费）
 ```
 
 配了 `DASHSCOPE_API_KEY` 后，LLM 判官启用真实大模型打分并纳入门禁：
 
 ```bash
 export DASHSCOPE_API_KEY=sk-xxx
-python -m eval.run_gate --strict
+python -m evaluation.run_gate --strict
 ```
 
 ## 阈值
@@ -42,7 +42,7 @@ python -m eval.run_gate --strict
 
 ## CI 接入
 
-`.github/workflows/ci.yml` 在 `pytest` 之后新增 `Eval gate` 步骤，跑 `python -m eval.run_gate --strict`。
+`.github/workflows/ci.yml` 在 `pytest` 之后新增 `Eval gate` 步骤，跑 `python -m evaluation.run_gate --strict`。
 分数低于 `GATE` 阈值即阻断合并。
 
 ## 评测集

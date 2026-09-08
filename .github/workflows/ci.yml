@@ -81,4 +81,4 @@ jobs:
           REDIS_URL: redis://localhost:6379
           DATABASE_URL: ""
           LANGCHAIN_TRACING_V2: "false"
-        run: python -m eval.run_gate --strict
+        run: python -m evaluation.run_gate --strict

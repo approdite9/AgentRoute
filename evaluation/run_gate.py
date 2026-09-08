@@ -1,9 +1,9 @@
 """统一评估门禁 —— 编排「计划质量 + RAG 检索 + LLM-as-judge」三层，产出量化报告并可作为 CI 门禁。
 
 用法：
-    python -m eval.run_gate            # 跑全部评估，打印报告（退出码始终 0，不阻塞）
-    python -m eval.run_gate --strict   # 门禁模式：任一「参与门禁」的指标低于阈值 → 退出码 1
-    python -m eval.run_gate --json out.json   # 附带把结构化结果写盘（供 Grafana/看板消费）
+    python -m evaluation.run_gate            # 跑全部评估，打印报告（退出码始终 0，不阻塞）
+    python -m evaluation.run_gate --strict   # 门禁模式：任一「参与门禁」的指标低于阈值 → 退出码 1
+    python -m evaluation.run_gate --json out.json   # 附带把结构化结果写盘（供 Grafana/看板消费）
 
 门禁参与规则：
 - 计划质量（completeness / preference_match / budget_consistency）与 RAG（recall@4 / faithfulness）
@@ -18,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from eval.thresholds import GATE, TARGET, gate_for
+from evaluation.thresholds import GATE, TARGET, gate_for
 
 _DATASET = Path(__file__).parent / "datasets" / "judge_qa.json"
 
@@ -56,7 +56,7 @@ def _eval_rag() -> dict:
 
 # ── 第 3 层：LLM-as-judge（answer relevancy / faithfulness）────────────────
 def _eval_llm_judge(pipeline) -> dict:
-    from eval.llm_judge import judge_batch
+    from evaluation.llm_judge import judge_batch
 
     if not _DATASET.exists():
         return {}
