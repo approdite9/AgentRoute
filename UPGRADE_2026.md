@@ -15,6 +15,23 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 
 ---
 
+## 0.5 实施进展（滚动更新）
+
+| 项 | 状态 | 说明 |
+| --- | --- | --- |
+| P0 致命 bug | ✅ 复核确认已修 | 4 个 P0 在当前代码均已修复（见 1.1） |
+| 输入注入防护层 | ✅ 已落地 | `security.py`：检测/清洗/边界标记三层，接入 graph sanitize 节点 |
+| **A1 评估回环** | ✅ **已落地，CI 全绿** | `evaluation/` 统一门禁 + LLM-as-judge + CI `--strict` 红线（2026-09-08） |
+| A2 上下文/记忆 | ⏳ 待做 | 长期记忆（LangGraph Store） |
+| A3 Guardrails | ⏳ 待做 | 输出校验 + PII 脱敏（金融刚需） |
+| A4 多模型网关 | ⏳ 待做 | LiteLLM 故障转移 + 成本预算 |
+| A5 语义缓存 + OTel | ⏳ 待做 | GPTCache + OpenTelemetry |
+| 主线 B 业务迁移 | ⏳ 待做 | 迁移到 Boss 招聘 / 合同续签 |
+
+> GitHub：[https://github.com/approdite9/AgentRoute](https://github.com/approdite9/AgentRoute) （main 与 origin 同步，CI 全绿）
+
+---
+
 ## 1. 现状诊断
 
 ### 1.1 P0 复核结论：4 个致命 bug 均已在当前代码中修复 ✅
@@ -45,29 +62,23 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 
 对照 2026 年一线 AI 工程实践，按投入产出（ROI）排序补齐：
 
-### A1. 评估回环（Evaluation Loop）🔴 最高优先级
+### A1. 评估回环（Evaluation Loop）✅ 已落地（2026-09-08，CI 全绿）
 
-**现状**：只有 `eval/evaluator.py` 占位 + LangSmith 追踪，无量化质量门禁。 **2026 做法**：LLM-as-a-judge 取代 BLEU/ROUGE，量化指标 + CI 门禁。
+**改造前**：只有 `tests/eval/evaluator.py`（计划质量启发式）+ `rag/eval.py`（检索 recall/faithfulness 词面代理）+ LangSmith 追踪，**三者分散、无统一 CI 门禁**。 **已完成**：新增 `evaluation/` 统一门禁包，编排三层评估 + LLM-as-judge，并接入 CI 作为红线。
 
-| 项 | 方案 |
+| 项 | 已落地实现 |
 | --- | --- |
-| 框架 | **Ragas**（RAG 场景）+ **DeepEval**（Agent/断言场景） |
-| 核心指标 | faithfulness ≥ 0.9 · answer relevancy ≥ 0.85 · context precision ≥ 0.8 |
-| 落地 | 建 `eval/datasets/` 黄金测试集 → CI 跑评估 → **分数不达标 block 合并** |
-| 监控 | 评估分数上报 Prometheus，Grafana 建「质量趋势」面板 |
+| 统一入口 | `python -m evaluation.run_gate [--strict] [--json]`，编排「计划质量 + RAG 检索 + LLM-as-judge」三层 |
+| LLM-as-judge | `evaluation/llm_judge.py`：大模型打 answer relevancy / faithfulness 分（取代 BLEU/ROUGE） |
+| 优雅降级 | 无 `DASHSCOPE_API_KEY` 时自动降级为词面代理，**仅报告、不参与门禁**（惰性 import 避免硬依赖 numpy），CI 免配额可跑 |
+| 阈值治理 | `evaluation/thresholds.py`：`GATE`（CI 起步红线）/ `TARGET`（2026 目标 faithfulness≥0.9 等）分离，随质量提升逐步收敛 |
+| 评测集 | `evaluation/datasets/judge_qa.json`，问答锚定 `rag/corpus/travel_notes.json` |
+| CI 门禁 | `.github/workflows/ci.yml` 在 pytest 后跑 `run_gate --strict`，分数不达标 exit 1 阻断合并 |
+| 测试 | `tests/test_eval_gate.py` 冒烟测试（阈值自洽 / 降级 / 门禁三路径），随套件在 CI 运行 |
 
-```python
-# eval/run_eval.py 骨架
-from deepeval import evaluate
-from deepeval.metrics import AnswerRelevancyMetric, FaithfulnessMetric
-from deepeval.test_case import LLMTestCase
+**当前门禁基线**：completeness / preference_match / budget_consistency 三项均 PASS；LLM 判官后端在 CI 无 key 时为 lexical（仅报告）。配 `DASHSCOPE_API_KEY` 后升级为真实 LLM 打分并纳入门禁。
 
-def build_cases(golden_set): ...
-metrics = [AnswerRelevancyMetric(threshold=0.85), FaithfulnessMetric(threshold=0.9)]
-results = evaluate(test_cases=build_cases(golden), metrics=metrics)
-# CI: 任一指标未过阈值 → sys.exit(1)
-
-```
+> 说明：最初方案设想用 Ragas/DeepEval 外部框架，实施时发现项目已有可复用的评估器，故改为**自研统一门禁编排 + 复用现有评估器**，减少重依赖、CI 免配额即可跑。后续可平滑接入 Ragas/DeepEval 作为 judge 后端。
 
 ### A2. 上下文工程 + Agent 记忆 🔴 高
 
@@ -140,7 +151,7 @@ results = evaluate(test_cases=build_cases(golden), metrics=metrics)
 | 阶段 | 目标 | 关键动作 | 产出 |
 | --- | --- | --- | --- |
 | **P0（1-2 天）** | 让项目真正能跑 | 修 4 个致命 bug、工具真正被调用 | 可运行的 baseline |
-| **P1（1 周）** | 质量可量化 | 接 Ragas/DeepEval + 黄金集 + CI 门禁 | 质量趋势面板 |
+| **P1（1 周）** ✅ | 质量可量化（已完成） | 自研 `evaluation/` 统一门禁 + LLM-as-judge + CI --strict 红线 | CI 全绿，门禁生效 |
 | **P2（1-2 周）** | 前沿层补齐 | 记忆层 + Guardrails + 多模型网关 | 2026 形态 Agent |
 | **P3（2-3 周）** | 业务迁移 | 把架构套到 Boss/合同续签真实场景 | 公司可用的业务 Agent |
 | **P4（持续）** | 金融合规 | PII 脱敏 + 全链路审计 + 降级预案 | 生产合规能力 |
