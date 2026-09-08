@@ -24,7 +24,7 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 | **A1 评估回环** | ✅ **已落地，CI 全绿** | `evaluation/` 统一门禁 + LLM-as-judge + CI `--strict` 红线（2026-09-08） |
 | **A2 上下文/记忆** | ✅ **已落地** | `memory/` 长期偏好画像（Redis db6，跨会话补全/回写）+ 接入 planner |
 | A3 Guardrails | ⏳ 待做 | 输出校验 + PII 脱敏（金融刚需） |
-| A4 多模型网关 | ⏳ 待做 | LiteLLM 故障转移 + 成本预算 |
+| **A4 多模型网关** | ✅ **已落地** | `gateway/` 故障转移（主→备用模型链）+ per-user token 预算 + 指标 |
 | A5 语义缓存 + OTel | ⏳ 待做 | GPTCache + OpenTelemetry |
 | 主线 B 业务迁移 | ⏳ 待做 | 迁移到 Boss 招聘 / 合同续签 |
 
@@ -82,21 +82,21 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 
 ### A2. 上下文工程 + Agent 记忆 ✅ 已落地（长期记忆画像）
 
-**2026 共识**：Agent 效果上限取决于「拿到的上下文质量」，不是模型本身。
-**已完成**：新增 `memory/` 包，实现跨会话的用户偏好长期记忆，并接入 planner。
+**2026 共识**：Agent 效果上限取决于「拿到的上下文质量」，不是模型本身。 **已完成**：新增 `memory/` 包，实现跨会话的用户偏好长期记忆，并接入 planner。
 
 | 项 | 已落地实现 |
 | --- | --- |
 | 长期记忆 Store | `memory/store.py`：Redis **db6**（与 checkpoint/cache/session/rate/pubsub/test 隔离），按 `user_memory:{user_id}` 存偏好画像 |
-| 记忆字段 | preferences / transport / hotel_type / origin_city / party_type / budget_level（list 累积去重，标量取最新非空）|
+| 记忆字段 | preferences / transport / hotel_type / origin_city / party_type / budget_level（list 累积去重，标量取最新非空） |
 | 规划前补全 | `merge_memory_into_state`：用历史画像补全用户**未填**字段，**不覆盖**本次明确输入 |
 | 规划后回写 | `update_memory_from_state`：回写本次明确偏好、累积去重、递增 visit_count、空值不抹除历史 |
-| 接入点 | `TripPlanner.invoke(..., user_id=...)`：传 user_id 才启用记忆，向后兼容；优雅降级（Redis 不可用退化内存兜底，不阻断规划）|
+| 接入点 | `TripPlanner.invoke(..., user_id=...)`：传 user_id 才启用记忆，向后兼容；优雅降级（Redis 不可用退化内存兜底，不阻断规划） |
 | 测试 | `tests/test_memory.py`：合并/回写/降级往返/契约字段，无需 Redis 即可跑 |
 
 **短期记忆**：LangGraph Checkpointer（已有）承载单会话状态，与本长期记忆互补。
 
 **后续可深化**（本次未做）：
+
 - **上下文裁剪**：单轮 token 预算控制，动态选择注入哪些上下文（避免塞满窗口）
 - **信息架构**：明确 Agent 能看哪些数据源、哪些知识库最新、何时检索什么
 - 语义化长期记忆（存自然语言「用户画像摘要」供 LLM 参考，而不止结构化偏好）
@@ -111,13 +111,23 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 | 输出 | **NeMo Guardrails** 或 **Llama Guard** 做内容合规校验 |
 | 数据 | **PII 脱敏**（金融场景硬要求）、敏感字段脱敏后再进日志 |
 
-### A4. 多模型网关 + 成本治理 🟡 中
+### A4. 多模型网关 + 成本治理 ✅ 已落地
 
-**现状**：单一 qwen3-max（dashscope），无兜底、无预算控制。 **2026 痛点**：LLMOps 最大缺口是「没在 LLM 基础设施里建成本控制」。
+**2026 痛点**：LLMOps 最大缺口是「没在 LLM 基础设施里建成本控制」。
+**已完成**：新增 `gateway/` 包，故障转移 + 成本治理，**不引入 litellm 重依赖、不改 create_llm 契约**。
 
-- **LiteLLM / AI Gateway**：统一多模型路由 + 故障转移（主模型挂了自动切备用）
-- **成本治理**：按 token 计费预算、per-user/per-tenant 配额、超预算告警
-- **供应商可移植性**：屏蔽厂商差异，随时换模型不改业务代码
+| 项 | 已落地实现 |
+| --- | --- |
+| 故障转移 | `gateway/router.py::ainvoke_with_fallback`：按「主模型 + `FALLBACK_MODELS`」链逐个降级重试，全败才抛 `LLMGatewayError` |
+| 模型覆盖 | `config.create_llm(model=...)` 支持指定模型（默认沿用 model_name，向后兼容）；`fallback_model_list()` 解析备用链 |
+| 成本治理 | `gateway/budget.py`：token 估算（字符启发式，无 tiktoken 依赖）+ per-user 预算护栏 `check_budget` + 用量记账 `record_usage` |
+| 预算配置 | `token_budget_per_user`（0=不限）；超预算拦截并计 `llm_budget_blocks_total` |
+| 可观测 | 4 个新指标：`llm_calls_total` / `llm_fallbacks_total` / `llm_tokens_total` / `llm_budget_blocks_total` |
+| 测试 | `tests/test_gateway.py`：主成功/切备用/全败/去重/预算护栏/记账，全程 mock LLM 无需 key |
+
+**供应商可移植性**：故障转移链可跨 provider（只要 create_llm 能构造对应模型）；后续可平滑替换为 LiteLLM 作为统一后端而不改上层调用。
+
+> 说明：沿用「复用现有工厂 + 薄封装」策略（同 A1）——网关是**可选增强层**，现有节点仍可直接调 `create_llm`，零侵入。
 
 ### A5. 语义缓存 + OpenTelemetry 🟡 中
 

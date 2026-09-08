@@ -45,8 +45,13 @@ class Settings(BaseSettings):
 
     dashscope_api_key: str = ""  # API/worker 服务必须设置；Streamlit 仅调 FastAPI 可为空
     model_name: str = "deepseek-r1"
+    # 多模型网关（A4）：主模型失败时按顺序尝试的备用模型（逗号分隔环境变量 FALLBACK_MODELS）。
+    # 例：FALLBACK_MODELS="qwen-plus,qwen-turbo"。空则不启用故障转移，行为与原来一致。
+    fallback_models: str = ""
     temperature: float = 0.7
     max_tokens: int = 8192
+    # 成本治理（A4）：每用户单次会话的 token 预算上限（0 = 不限制）。超预算由网关侧拦截并告警。
+    token_budget_per_user: int = 0
     redis_url: str = "redis://localhost:6379"
     database_url: str = ""
     mcp_url: str = "https://dashscope.aliyuncs.com/api/v1/mcps/amap-maps/mcp"
@@ -148,15 +153,26 @@ class Settings(BaseSettings):
             "url": f"{self.amap_mcp_url}{sep}key={self.amap_api_key}",
         }
 
-    def create_llm(self, *, streaming: bool = True) -> ChatTongyi:
+    def create_llm(self, *, streaming: bool = True, model: str | None = None) -> ChatTongyi:
         # streaming=False 用于结构化输出（with_structured_output）：流式下
         # ChatTongyi 的 tool_call args 会被拆散、组装不全，导致 Pydantic 校验缺字段。
+        # model 覆盖（A4 网关故障转移用）：为空则沿用 self.model_name，向后兼容。
         return ChatTongyi(
-            model=self.model_name,
+            model=model or self.model_name,
             api_key=self.dashscope_api_key,
             temperature=self.temperature,
             streaming=streaming,
         )
+
+    def fallback_model_list(self) -> list[str]:
+        """解析 fallback_models 为去空去重的模型名列表（保序）。"""
+        seen, out = set(), []
+        for m in (self.fallback_models or "").split(","):
+            m = m.strip()
+            if m and m not in seen:
+                seen.add(m)
+                out.append(m)
+        return out
 
 
 settings = Settings()

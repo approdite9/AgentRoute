@@ -59,6 +59,24 @@ MCP_CALLS = Counter(
 CACHE_HITS = Counter("cache_hits_total", "Redis cache hits", ["cache"])
 CACHE_MISSES = Counter("cache_misses_total", "Redis cache misses", ["cache"])
 
+# ==================== 多模型网关（A4）====================
+# LLM 调用按模型 + 结果计数：主模型 vs 备用模型、成功/失败，用于观测故障转移触发率。
+LLM_CALLS = Counter(
+    "llm_calls_total", "LLM invocations by model and outcome", ["model", "status"]
+)  # status: success|error
+# 故障转移触发次数（主模型失败 → 切备用），按 from→to 模型对计数。
+LLM_FALLBACKS = Counter(
+    "llm_fallbacks_total", "LLM fallback switches", ["from_model", "to_model"]
+)
+# 估算消耗的 token（按用户聚合），用于成本治理观测。
+LLM_TOKENS = Counter(
+    "llm_tokens_total", "Estimated tokens consumed", ["kind"]
+)  # kind: prompt|completion
+# 预算拦截次数（超出 per-user token 预算被网关拒绝）。
+LLM_BUDGET_BLOCKS = Counter(
+    "llm_budget_blocks_total", "Requests blocked by token budget"
+)
+
 # Gauge 在多进程模式下必须指定聚合方式；livesum = 所有「存活」进程之和。
 ACTIVE_TASKS = Gauge(
     "celery_active_tasks",
