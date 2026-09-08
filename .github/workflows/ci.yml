@@ -64,6 +64,14 @@ jobs:
             exit 1
           }
 
+      - name: Upload pytest output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-output
+          path: pytest_out.txt
+          if-no-files-found: ignore
+
       # 评估门禁：编排「计划质量 + RAG 检索 + LLM-as-judge」三层评估。
       # 无 DASHSCOPE_API_KEY 时，LLM 判官自动降级为词面代理且不参与门禁，
       # 仅「计划质量 + RAG recall」这类免配额、结果确定的指标作为红线。
