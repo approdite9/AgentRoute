@@ -50,6 +50,11 @@ test = [
 # 从而把 tests/conftest.py 当作初始 conftest —— 其中的 pytest_plugins=["anyio"] 才合法。
 testpaths = ["tests"]
 addopts = "-ra"
+# 显式把项目根加入 sys.path，确保顶层模块（config / rag / eval / agents / mcp_client 等）
+# 在任何收集顺序下都可被 conftest 与测试 import。
+# （新增顶层 eval/ 包后与 tests/eval/ 包名相邻，若不固定 pythonpath，
+#  pytest 的 rootdir 插入顺序可能使项目根不在 sys.path[0]，导致 `import config` 失败。）
+pythonpath = ["."]
 
 [tool.ruff]
 target-version = "py313"
