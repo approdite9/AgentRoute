@@ -137,10 +137,24 @@ class TripPlanner:
 
     # ==================== 非流式调用 ====================
 
-    async def invoke(self, user_input: str, thread_id: str = "default") -> dict:
-        """输入自然语言需求，返回结构化行程 dict（失败时为空 dict）。"""
+    async def invoke(
+        self, user_input: str, thread_id: str = "default", user_id: str | None = None
+    ) -> dict:
+        """输入自然语言需求，返回结构化行程 dict（失败时为空 dict）。
+
+        长期记忆（A2）：传入 user_id 时，规划前用其历史偏好画像补全未填字段，
+        规划后回写本次明确提供的偏好。user_id 为空则完全跳过记忆（向后兼容）。
+        记忆层优雅降级——Redis 不可用不影响规划。
+        """
         state = self._parse_user_input(user_input)
+        if user_id:
+            from memory import get_user_memory, merge_memory_into_state
+            memory = await get_user_memory(user_id)
+            state = merge_memory_into_state(state, memory)
         result = await self.graph.ainvoke(state, config=self._make_config(thread_id))
+        if user_id:
+            from memory import update_memory_from_state
+            await update_memory_from_state(user_id, state)
         return result.get("final_plan") or {}
 
     # ==================== 流式调用 ====================

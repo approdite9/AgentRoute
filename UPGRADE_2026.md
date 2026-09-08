@@ -22,7 +22,7 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 | P0 致命 bug | ✅ 复核确认已修 | 4 个 P0 在当前代码均已修复（见 1.1） |
 | 输入注入防护层 | ✅ 已落地 | `security.py`：检测/清洗/边界标记三层，接入 graph sanitize 节点 |
 | **A1 评估回环** | ✅ **已落地，CI 全绿** | `evaluation/` 统一门禁 + LLM-as-judge + CI `--strict` 红线（2026-09-08） |
-| A2 上下文/记忆 | ⏳ 待做 | 长期记忆（LangGraph Store） |
+| **A2 上下文/记忆** | ✅ **已落地** | `memory/` 长期偏好画像（Redis db6，跨会话补全/回写）+ 接入 planner |
 | A3 Guardrails | ⏳ 待做 | 输出校验 + PII 脱敏（金融刚需） |
 | A4 多模型网关 | ⏳ 待做 | LiteLLM 故障转移 + 成本预算 |
 | A5 语义缓存 + OTel | ⏳ 待做 | GPTCache + OpenTelemetry |
@@ -80,14 +80,26 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 
 > 说明：最初方案设想用 Ragas/DeepEval 外部框架，实施时发现项目已有可复用的评估器，故改为**自研统一门禁编排 + 复用现有评估器**，减少重依赖、CI 免配额即可跑。后续可平滑接入 Ragas/DeepEval 作为 judge 后端。
 
-### A2. 上下文工程 + Agent 记忆 🔴 高
+### A2. 上下文工程 + Agent 记忆 ✅ 已落地（长期记忆画像）
 
-**现状**：已无假 `[TOOL_CALL]`（历史问题，已修）；当前缺的是**记忆层**。 **2026 共识**：Agent 效果上限取决于「拿到的上下文质量」，不是模型本身。
+**2026 共识**：Agent 效果上限取决于「拿到的上下文质量」，不是模型本身。
+**已完成**：新增 `memory/` 包，实现跨会话的用户偏好长期记忆，并接入 planner。
 
-- **短期记忆**：LangGraph Checkpointer（已有）承载单会话状态
-- **长期记忆**：接入 **LangGraph Store**，存用户偏好 / 历史决策，跨会话可检索
+| 项 | 已落地实现 |
+| --- | --- |
+| 长期记忆 Store | `memory/store.py`：Redis **db6**（与 checkpoint/cache/session/rate/pubsub/test 隔离），按 `user_memory:{user_id}` 存偏好画像 |
+| 记忆字段 | preferences / transport / hotel_type / origin_city / party_type / budget_level（list 累积去重，标量取最新非空）|
+| 规划前补全 | `merge_memory_into_state`：用历史画像补全用户**未填**字段，**不覆盖**本次明确输入 |
+| 规划后回写 | `update_memory_from_state`：回写本次明确偏好、累积去重、递增 visit_count、空值不抹除历史 |
+| 接入点 | `TripPlanner.invoke(..., user_id=...)`：传 user_id 才启用记忆，向后兼容；优雅降级（Redis 不可用退化内存兜底，不阻断规划）|
+| 测试 | `tests/test_memory.py`：合并/回写/降级往返/契约字段，无需 Redis 即可跑 |
+
+**短期记忆**：LangGraph Checkpointer（已有）承载单会话状态，与本长期记忆互补。
+
+**后续可深化**（本次未做）：
 - **上下文裁剪**：单轮 token 预算控制，动态选择注入哪些上下文（避免塞满窗口）
-- **信息架构**：明确 Agent 能看哪些数据源、哪些知识库是最新的、何时检索什么
+- **信息架构**：明确 Agent 能看哪些数据源、哪些知识库最新、何时检索什么
+- 语义化长期记忆（存自然语言「用户画像摘要」供 LLM 参考，而不止结构化偏好）
 
 ### A3. Guardrails / 防护栏 🔴 高（金融刚需）
 
