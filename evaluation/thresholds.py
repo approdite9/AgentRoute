@@ -15,6 +15,8 @@ TARGET = {
     "preference_match": 0.85,
     "budget_consistency": 1.00,
     "rag_recall@4": 0.85,
+    # context precision（UPGRADE_2026 A1 承诺 ≥0.8）：用检索 precision@4 作为等价度量。
+    "rag_precision@4": 0.80,
     "rag_faithfulness": 0.90,
     "llm_relevancy": 0.85,
     "llm_faithfulness": 0.90,
@@ -27,6 +29,8 @@ GATE = {
     "preference_match": 0.75,
     "budget_consistency": 1.00,
     "rag_recall@4": 0.75,
+    # 起步门禁略低于 target；precision@4 受语料规模影响，起步给 0.40 缓冲。
+    "rag_precision@4": 0.40,
     "rag_faithfulness": 0.60,
     "llm_relevancy": 0.75,
     "llm_faithfulness": 0.80,

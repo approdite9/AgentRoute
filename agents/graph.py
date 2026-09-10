@@ -56,6 +56,22 @@ def should_continue(state: TripState) -> str:
     return "error"
 
 
+def rag_router(state: TripState) -> str:
+    """检索路由（Agentic 决策，纯规则零延迟）——决定要不要过 RAG 节点。
+
+    Agentic RAG 的第一层自主决策：不是"每次都检索"，而是**判断本次是否需要检索**。
+    这里刻意用零成本规则而非再调一次 LLM——既是 agentic（动态跳过/进入），
+    又不给用户增加任何等待：命中"跳过"分支时整体比原流程更快。
+
+    跳过检索（→ synthesize）的情形：
+      - 多轮修改：已有成稿 final_plan 且本次带来了 user_feedback（只想改细节，无需重拉知识）。
+    其余（首轮规划）→ 进入 rag 检索内容证据。
+    """
+    if state.get("final_plan") and (state.get("user_feedback") or "").strip():
+        return "skip"
+    return "retrieve"
+
+
 def entry_router(state: TripState) -> list[str]:
     """入口分流：
 
@@ -126,7 +142,13 @@ def build_graph(checkpointer: Any = None) -> Any:
         should_continue,
         {"retry": "poi", "continue": "review", "error": "error_handler"},
     )
-    builder.add_edge("review", "rag")
+    # review → (rag_router) → rag 或直接 synthesize。
+    # 首轮规划进 rag 检索内容证据；多轮修改跳过（省时省 token）。
+    builder.add_conditional_edges(
+        "review",
+        rag_router,
+        {"retrieve": "rag", "skip": "synthesize"},
+    )
     builder.add_edge("rag", "synthesize")
     # 整合后补坐标（best-effort）：给缺经纬度的景点/酒店用 maps_geo 补点，地图才能画。
     builder.add_edge("synthesize", "geocode")

@@ -151,6 +151,9 @@ class TripPlanner:
             from memory import get_user_memory, merge_memory_into_state
             memory = await get_user_memory(user_id)
             state = merge_memory_into_state(state, memory)
+        # 注入 user_id 到 state：供节点内成本护栏（gateway.check_budget / record_usage）
+        #   按 user_id 计 per-user 预算。为空则护栏透传（向后兼容）。
+        state["user_id"] = user_id or ""
         result = await self.graph.ainvoke(state, config=self._make_config(thread_id))
         if user_id:
             from memory import update_memory_from_state

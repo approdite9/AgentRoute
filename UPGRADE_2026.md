@@ -25,7 +25,7 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 | **A2 上下文/记忆** | ✅ **已落地** | `memory/` 长期偏好画像（Redis db6，跨会话补全/回写）+ 接入 planner |
 | A3 Guardrails | ⏳ 待做 | 输出校验 + PII 脱敏（金融刚需） |
 | **A4 多模型网关** | ✅ **已落地** | `gateway/` 故障转移（主→备用模型链）+ per-user token 预算 + 指标 |
-| **A5 语义缓存 + OTel** | ✅ **已落地** | `cache/semantic.py` 相似 query 命中 + `monitoring/otel.py` OTel（no-op 降级）|
+| **A5 语义缓存 + OTel** | ✅ **已落地** | `cache/semantic.py` 相似 query 命中 + `monitoring/otel.py` OTel（no-op 降级） |
 | 主线 B 业务迁移 | ⏳ 待做 | 迁移到 Boss 招聘 / 合同续签 |
 
 > GitHub：[https://github.com/approdite9/AgentRoute](https://github.com/approdite9/AgentRoute) （main 与 origin 同步，CI 全绿）
@@ -136,7 +136,7 @@ AgentRoute 现有的 v1 规划（FastAPI + Celery + Redis 多库 + PG + Promethe
 | --- | --- |
 | 语义缓存 | `cache/semantic.py`：精确 miss 后用向量余弦相似度找语义等价历史 query（如「成都三日游」↔「成都玩三天」），命中即复用。Redis **db7**，阈值默认 0.92 |
 | 向量化复用 | 复用 `rag.embeddings.get_embedder()`：默认 HashingEmbedder（离线/确定性），`RAG_EMBEDDER=dashscope` 走线上 embedding，无新依赖 |
-| OTel 接入 | `monitoring/otel.py`：`init_tracing()` + `span()` 上下文管理器。**未装 opentelemetry / 未配 `OTEL_EXPORTER_OTLP_ENDPOINT` 时降级为零开销 no-op**，装了并配 endpoint 则产出真实 span |
+| OTel 接入 | `monitoring/otel.py`：`init_tracing()` + `span()` 上下文管理器。**未装 opentelemetry / 未配 **`OTEL_EXPORTER_OTLP_ENDPOINT`** 时降级为零开销 no-op**，装了并配 endpoint 则产出真实 span |
 | 优雅降级 | 语义缓存 Redis/embedder 不可用 → get 视为 miss、set 静默跳过；OTel 无依赖 → no-op 且不吞异常 |
 | 测试 | `tests/test_semantic_otel.py`：余弦相似度 / 语义相近性 / 降级往返 / OTel no-op 幂等与异常传播，无需 Redis/OTel collector |
 

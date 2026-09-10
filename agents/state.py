@@ -51,6 +51,12 @@ class TripState(TypedDict):
     user_feedback: str | None
     hitl_enabled: bool
 
+    # 用户标识（A2 长期记忆 + A4 成本护栏）：planner 在规划前注入。
+    #   - 长期记忆：按 user_id 读写历史偏好画像。
+    #   - 成本护栏：gateway.check_budget / record_usage 按 user_id 计 per-user token 预算。
+    #   为空（""）时记忆与预算护栏均透传（向后兼容 CLI / 匿名调用）。
+    user_id: str
+
     # Error tracking
     error: str | None
     retry_count: int

@@ -51,6 +51,10 @@ LONG_TERM_PREF_FIELDS = (
 )
 _LIST_FIELDS = {"preferences", "transport"}
 
+# 列表型偏好的容量上限：累积时只保留最近 N 个（FIFO 淘汰最旧），
+# 避免用户长期使用后 preferences/transport 无限增长、撑爆单条记忆。
+_LIST_MAX_LEN = 20
+
 # Redis 不可用时的进程内兜底（仅当前进程有效，够 CI / 单机降级用）。
 _MEMORY_FALLBACK: dict[str, dict] = {}
 
@@ -138,6 +142,9 @@ def _merge_field(field: str, old, new):
         for item in (new or []):
             if item and item not in merged:
                 merged.append(item)
+        # 容量上限：超长时保留最近 _LIST_MAX_LEN 个（淘汰最旧），防止无限增长。
+        if len(merged) > _LIST_MAX_LEN:
+            merged = merged[-_LIST_MAX_LEN:]
         return merged
     return new if new else old
 

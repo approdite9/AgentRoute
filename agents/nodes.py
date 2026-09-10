@@ -34,7 +34,7 @@ from cache.client import (
     TTL_ROUTE,
     TTL_GEO,
 )
-from monitoring.metrics import NODE_DURATION
+from monitoring.metrics import NODE_DURATION, RAG_REFLECTIONS, RAG_CONFIDENCE
 from render import parse_plan
 from prompts import (
     WEATHER_AGENT_PROMPT,
@@ -339,19 +339,34 @@ async def route_node(state: TripState) -> dict:
 
 
 async def rag_node(state: TripState) -> dict:
-    """RAG 检索：按城市+偏好检索旅行知识（攻略/口碑/玩法）作为整合的"内容证据"。
+    """RAG 检索（Agentic：自我反思 + 条件重检）。
 
-    best-effort：检索失败 / 该城市无语料 / 无命中 都不报错（rag_context=None），
-    绝不影响计划生成。检索在线程池执行，避免（DashScope embedding 时）阻塞事件循环。
+    按城市+偏好检索旅行知识（攻略/口碑/玩法）作为整合的"内容证据"。
+    **自我反思**：检索后用零成本的词面置信度(retrieval_confidence)判断这批够不够好；
+    低于阈值且仍在时间预算内，则**放宽一次重检**（去掉结构化过滤、改用宽查询）。
+    重检仅走本地检索管线（默认 Hashing embedder + 词面重排），**不额外调 LLM**；
+    离线模式下零网络开销，线上模式至多多一次 embedding，且受 _RAG_BUDGET_S 硬保护。
+
+    best-effort：检索失败 / 无语料 / 无命中 都不报错（rag_context=None），绝不阻断出稿。
     """
     import asyncio
+
+    # 自我反思阈值与时间预算：覆盖率低于 _RAG_CONF_MIN 才重检；已耗时超预算则放弃重检（保体验）。
+    # 阈值 0.35：query 关键词≥35% 被命中即视为够好、不重检——正常查询几乎不触发，故不增加等待；
+    # 只有基本不沾边（换城市无语料、生僻需求）才触发一次放宽重检。
+    _RAG_CONF_MIN = 0.35
+    _RAG_BUDGET_S = 2.5
 
     city = state.get("city", "")
     prefs = "、".join(state.get("preferences") or []) or "热门 玩法 美食 必去"
     logger.info("node_start", node="rag", city=city)
     t0 = time.perf_counter()
     try:
-        from rag.pipeline import get_default_pipeline, format_context
+        from rag.pipeline import (
+            get_default_pipeline,
+            format_context,
+            retrieval_confidence,
+        )
 
         pipe = get_default_pipeline()
         # 该城市有语料则按城市做结构化过滤；否则全库语义召回兜底。
@@ -359,11 +374,35 @@ async def rag_node(state: TripState) -> dict:
         where = {"city": city} if has_city else None
         query = f"{city} {prefs} 攻略 玩法 美食 避坑"
         hits = await asyncio.to_thread(pipe.retrieve, query, where, 4)
+        conf = retrieval_confidence(query, hits)
+        reflected = False
+        outcome = "no_reflect"
+
+        # —— 自我反思：置信度不足且仍在预算内 → 放宽一次重检（纯本地、无 LLM）——
+        if conf < _RAG_CONF_MIN:
+            if (time.perf_counter() - t0) < _RAG_BUDGET_S:
+                relaxed_query = f"{city} {prefs}"
+                hits2 = await asyncio.to_thread(pipe.retrieve, relaxed_query, None, 6)
+                conf2 = retrieval_confidence(relaxed_query, hits2)
+                reflected = True
+                if conf2 > conf:  # 重检更优才采纳，否则保留首轮结果（绝不劣化）
+                    hits, conf, outcome = hits2, conf2, "reflected_adopted"
+                else:
+                    outcome = "reflected_kept"
+            else:
+                outcome = "over_budget"  # 已超时间预算，放弃重检（保体验）
+
+        # 自我反思可观测：结果分布 + 最终置信度分布（用于验证阈值是否合理）。
+        RAG_REFLECTIONS.labels(outcome=outcome).inc()
+        RAG_CONFIDENCE.observe(conf)
+
         ctx = format_context(hits)
         NODE_DURATION.labels(node="rag").observe(time.perf_counter() - t0)
         logger.info(
             "node_done", node="rag",
-            duration_ms=int((time.perf_counter() - t0) * 1000), chunks=len(hits),
+            duration_ms=int((time.perf_counter() - t0) * 1000),
+            chunks=len(hits), confidence=round(conf, 3),
+            reflected=reflected, outcome=outcome,
         )
         return {"rag_context": ctx or None}
     except Exception as exc:  # noqa: BLE001 —— best-effort，不触碰 error
@@ -585,12 +624,32 @@ async def synthesis_node(state: TripState) -> dict:
                 HumanMessage(content=user_input),
             ]
 
+            # 网关接入（A4）：兜底整合走多模型故障转移 —— 主模型失败时按 fallback_models
+            #   逐个降级重试，全败才抛 LLMGatewayError。调用前做 per-user 预算护栏，
+            #   调用后记账，token 用量上报 Prometheus。user_id 为空 / 预算=0 时护栏透传。
+            from gateway import ainvoke_with_fallback, check_budget, record_usage
+            from gateway.router import LLMGatewayError
+
+            user_id = state.get("user_id") or ""
+            if not check_budget(user_id, user_input):
+                raise ValueError(
+                    "synthesize: 超出 per-user token 预算，拒绝本次整合调用"
+                )
+
             @retry(**_RETRY_KWARGS)
             async def _invoke_raw() -> Any:
-                return await llm.ainvoke(fallback_messages)
+                # 经网关按模型链故障转移；网关内部已计成功/失败与 fallback 指标。
+                return await ainvoke_with_fallback(fallback_messages, streaming=False)
 
-            raw = await _invoke_raw()
+            try:
+                raw = await _invoke_raw()
+            except LLMGatewayError as gw_exc:
+                # 所有候选模型都失败 —— 视为整合失败，交由外层 except 走容错兜底。
+                logger.error("synthesize_gateway_all_failed", error=str(gw_exc))
+                raise
             text = getattr(raw, "content", None) or str(raw)
+            # 记账：兜底整合成功产出后累计 token 用量到该用户预算。
+            record_usage(user_id, user_input, text)
 
             plan_dict = parse_plan(text)  # schema 校验+归一化（含温度/三餐/预算）
             mode = "fallback-validated"

@@ -1,0 +1,29 @@
+# 魔搭 Studio 轻量部署依赖（进程内直跑 LangGraph，无 FastAPI/Celery/Redis/Postgres）
+# 对应入口：app_studio.py
+# 说明：相比 pyproject.toml 砍掉了 fastapi/uvicorn/celery/flower/asyncpg/sqlalchemy/alembic/
+#       sentry/langgraph-checkpoint-* 等后端与生产化依赖，仅保留进程内规划所需。
+
+# --- Web UI ---
+streamlit
+pydeck
+
+# --- LangGraph / LangChain 核心 ---
+langgraph
+langchain
+langchain-community
+langchain-mcp-adapters
+
+# --- 阿里通义 / DashScope（LLM + embedding + MCP 鉴权）---
+dashscope
+
+# --- 数据校验 / 配置 ---
+pydantic>=2
+pydantic-settings
+
+# --- 可观测 / 健壮性 ---
+structlog
+prometheus-client
+tenacity
+
+# --- HTTP ---
+httpx

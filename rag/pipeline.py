@@ -90,3 +90,30 @@ def format_context(chunks: list[Chunk], max_chars: int = 1200) -> str:
         lines.append(piece)
         total += len(piece)
     return "\n".join(lines)
+
+
+def retrieval_confidence(query: str, chunks: list[Chunk]) -> float:
+    """检索置信度（零成本自我反思信号）——query 关键词被 top 片段覆盖的最大比例。
+
+    用**覆盖率**(query 与片段的 token 交集 / query token 数)而非 Jaccard：
+    中文 bigram 分词下片段 token 远多于 query，Jaccard 会被片段长度稀释到接近 0
+    （命中也判低分 → 几乎每次误触发重检、拖慢体验）；覆盖率只问"query 的词有多少
+    出现在片段里"，命中即高分、无关才低分，区分度更干净、阈值更好定。
+
+    **不额外调用 LLM / embedding / 网络**，纯本地 O(片段数) 计算。Agentic RAG 的
+    "自我反思"据此判断这批检索够不够好：低于阈值才触发一次放宽重检。返回 [0,1]。
+    """
+    from rag.tokenize import tokenize
+
+    if not chunks:
+        return 0.0
+    q = set(tokenize(query))
+    if not q:
+        return 0.0
+    best = 0.0
+    for c in chunks:
+        d = set(tokenize(c.text))
+        cov = len(q & d) / len(q)
+        if cov > best:
+            best = cov
+    return best

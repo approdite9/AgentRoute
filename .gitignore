@@ -10,3 +10,6 @@ __pycache__/
 monitoring/prom_multiproc/
 # 评估门禁运行产物（eval.run_gate --json 的输出，勿入库）
 eval_report.json
+# Agentic RAG 改造前的备份文件（勿入库）
+*.bak_agentic
+*.bak

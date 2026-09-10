@@ -54,8 +54,16 @@ class JudgeScore:
 
 
 def _has_llm() -> bool:
-    """是否具备真实 LLM 判官条件（配了 DashScope key）。"""
-    return bool(os.getenv("DASHSCOPE_API_KEY"))
+    """是否具备真实 LLM 判官条件（配了 DashScope key）。
+
+    优先走 config.settings（pydantic-settings 会读 .env），与业务侧取 key 的方式一致，
+    避免「.env 配了 key 但判官仍降级为词面代理」。settings 不可用时回退到环境变量。
+    """
+    try:
+        from config import settings
+        return bool(settings.dashscope_api_key)
+    except Exception:  # noqa: BLE001 —— config 不可加载时退回环境变量判断
+        return bool(os.getenv("DASHSCOPE_API_KEY"))
 
 
 # ── 词面代理（无 key 时的兜底判官）──────────────────────────────────

@@ -77,6 +77,23 @@ LLM_BUDGET_BLOCKS = Counter(
     "llm_budget_blocks_total", "Requests blocked by token budget"
 )
 
+# ==================== Agentic RAG 自我反思（可观测重检）====================
+# RAG 检索节点的自我反思结果分布，按 outcome 标签计数：
+#   no_reflect        —— 首轮置信度已达标，未触发重检（正常/期望的多数情况）
+#   reflected_adopted —— 触发重检且重检结果更优、被采纳
+#   reflected_kept    —— 触发重检但未更优，保留首轮结果（绝不劣化）
+#   over_budget       —— 置信度不足但已超时间预算，放弃重检（保体验）
+# 用途：验证阈值是否合理——若 reflected_* 占比过高，说明阈值偏高或语料不足。
+RAG_REFLECTIONS = Counter(
+    "rag_reflections_total", "RAG self-reflection outcomes", ["outcome"]
+)
+# 检索置信度（query 关键词被 top 片段覆盖的比例）分布，用于观测检索质量与调阈值。
+RAG_CONFIDENCE = Histogram(
+    "rag_confidence",
+    "RAG retrieval confidence (query-term coverage of top chunks)",
+    buckets=[0.1, 0.2, 0.3, 0.35, 0.5, 0.7, 0.9, 1.0],
+)
+
 # Gauge 在多进程模式下必须指定聚合方式；livesum = 所有「存活」进程之和。
 ACTIVE_TASKS = Gauge(
     "celery_active_tasks",
